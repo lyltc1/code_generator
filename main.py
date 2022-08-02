@@ -5,6 +5,7 @@ directory named models_GT_2_color, which contains file Class_CorresPoint0000XX.t
 
 """
 import copy
+from tqdm import tqdm
 
 from bop_toolkit_lib import inout
 from bop_toolkit_lib import transform
@@ -103,6 +104,7 @@ class DividedPcd:
     # ---- ply symmetry info ----
     self.sym_type = list()
     self.sym_type_index = dict()
+    self.pair = dict()
     # ---- pcd label sym type ----
     self.threshold = 1.0
     self.clip_x_min = 0.0
@@ -198,9 +200,66 @@ class DividedPcd:
     return all_dists
   def pair_discrete_sym_pcd(self):
     """ pair points indiscrete sym
+
+    1. get the sym part pcd (named local_pcd) and the index map from local to origin
+    2. for each symmetry, build the index pair correspondence
     """
-    # TODO
-    print("pair_discrete_sym_pcd")
+    symmetries_discrete = self.model_info['symmetries_discrete']
+    local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['discrete sym'])
+    pcd_tree = o3d.geometry.KDTreeFlann(local_pcd)
+    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['discrete sym']))
+    all_group = []
+    for sym in symmetries_discrete:
+      all_pair = []
+      transformation_matrix = np.asarray(sym).reshape(4,4)
+      local_pcd_transformed = copy.deepcopy(local_pcd)
+      local_pcd_transformed.transform(transformation_matrix)
+      for i in range(len(local_pcd.points)):
+        [k, idx, _] = pcd_tree.search_knn_vector_3d(local_pcd_transformed.points[i], 1)
+        all_pair.append([i, idx[0]])
+      all_group.append(all_pair)
+    # ---- save the final_pair index in final_pairs, solved_index is assist variable ----
+    final_pairs = list()
+    solved_index = list()
+    for all_pair in all_group:
+      for pair in tqdm(all_pair):
+        pair0_in_solved_index = pair[0] in solved_index
+        pair1_in_solved_index = pair[1] in solved_index
+        if pair0_in_solved_index is False and pair1_in_solved_index is False:
+          final_pairs.append(pair)
+          solved_index.extend(pair)
+        elif pair0_in_solved_index is True and pair1_in_solved_index is False:
+          # find which final_pair contain pair[0], and insert pair[1]
+          for final_pair in final_pairs:
+            if pair[0] in final_pair:
+              final_pair.append(pair[1])
+              solved_index.append(pair[1])
+              break
+        elif pair0_in_solved_index is False and pair1_in_solved_index is True:
+          # find which final_pair contain pair[1], and insert pair[0]
+          for final_pair in final_pairs:
+            if pair[1] in final_pair:
+              final_pair.append(pair[0])
+              solved_index.append(pair[0])
+              break
+        elif pair1_in_solved_index is True and pair1_in_solved_index is True:
+          # find pair[0] and pair[1] in final_pairs, they must be in the same final_pair, merge them
+          find_in_one_final_pair_flog = False
+          for final_pair in final_pairs:
+            if pair[0] in final_pair and pair[1] in final_pair:
+              find_in_one_final_pair_flog = True
+              break
+            elif pair[0] in final_pair and pair[1] not in final_pair:
+              final_pair_contain_pair0 = final_pair
+            elif pair[1] in final_pair and pair[0] not in final_pair:
+              final_pair_contain_pair1 = final_pair
+          if find_in_one_final_pair_flog is False:
+            # merge two final_pair
+            final_pair_contain_pair0.extend(final_pair_contain_pair1)
+            final_pairs.remove(final_pair_contain_pair1)
+        else:
+          raise ArithmeticError('some problem in logic, should not run this line')
+    self.pair['discrete sym'] = final_pairs
 
   def pair_n_fold_sym_pcd(self, n):
     """ pair points in n_fold
@@ -339,8 +398,11 @@ class AppWindow:
 
     self._collapsable_vert_6 = gui.CollapsableVert("Pair PCD", 0.33 * em, gui.Margins(em, 0, 0, 0))
     self._collapsable_vert_6.set_is_open(True)
+    self._horiz_5 = gui.Horiz()
     self._button_pair_pcd = gui.Button("Pair PCD")
     self._button_pair_pcd.set_on_clicked(self._on_buttion_pair_pcd)
+    self._button_vis_pcd = gui.Button("Vis PCD")
+    self._button_vis_pcd.set_on_clicked(self._on_buttion_vis_pcd)
 
     # ---- Layout ----
     self.window.add_child(self._scene)
@@ -390,6 +452,12 @@ class AppWindow:
     self._collapsable_vert_5.add_child(self._horiz_4)
     self._horiz_4.add_child(self._button_save_result)
     self._horiz_4.add_child(self._button_load_result)
+
+    self._settings_panel.add_child(self._collapsable_vert_6)
+    self._collapsable_vert_6.add_child(self._horiz_5)
+    self._horiz_5.add_child(self._button_pair_pcd)
+    self._horiz_5.add_child(self._button_vis_pcd)
+
     # ---- Menu ----
 
     # ---- tool init setting ----
@@ -561,6 +629,7 @@ class AppWindow:
     result['num_points'] = len(self.divided_pcd.origin_pcd.points)
     result['sym_type'] = self.divided_pcd.get_sym_type()
     result['sym_type_index'] = dict()
+    result['pair'] = self.divided_pcd.pair
     num_points = 0
     for k, v in self.divided_pcd.sym_type_index.items():
       result['sym_type_index'][k] = v.tolist()
@@ -600,6 +669,7 @@ class AppWindow:
     assert result['num_points'] == len(self.divided_pcd.origin_pcd.points)
     # ---- save the sym type information to self.divided_pcd ----
     self.divided_pcd.sym_type = result['sym_type']
+    self.divided_pcd.pair = result['pair']
     self._listview_sym_chosed.set_items(self.divided_pcd.sym_type)
     num_points = 0
     for k, v in result['sym_type_index'].items():
@@ -784,12 +854,18 @@ class AppWindow:
       elif sym_type in ['discrete sym']:
         self.divided_pcd.pair_discrete_sym_pcd()
 
+  def _on_buttion_vis_pcd(self):
+    """ vis points in color """
+    delta_x = self.divided_pcd.model_info['size_x'] / (255 * 2)
+    delta_y = self.divided_pcd.model_info['size_y'] / (255 * 2)
+    delta_z = self.divided_pcd.model_info['size_z'] / (255 * 2)
+    colors = np.zeros([self.divided_pcd.origin_pcd.points])
+
 def main():
   """ Init GUI and run with pre-defined parameters """
   gui.Application.instance.initialize()
   w = AppWindow(2048, 1536, DatasetInfo(p))
   gui.Application.instance.run()
-
 
 if __name__ == "__main__":
   main()
