@@ -199,9 +199,9 @@ class DividedPcd:
     all_dists = np.sum(np.array(all_dists), axis=0)  # (discrete_step, n_point)
     return all_dists
   def pair_discrete_sym_pcd(self):
-    """ pair points indiscrete sym
+    """ pair points in discrete sym
 
-    1. get the sym part pcd (named local_pcd) and the index map from local to origin
+    1. get the sym part pcd (named local_pcd)
     2. for each symmetry, build the index pair correspondence
     """
     symmetries_discrete = self.model_info['symmetries_discrete']
@@ -210,68 +210,101 @@ class DividedPcd:
     local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['discrete sym']))
     all_group = []
     for sym in symmetries_discrete:
-      all_pair = []
-      transformation_matrix = np.asarray(sym).reshape(4,4)
+      transformation_matrix = np.asarray(sym).reshape(4, 4)
       local_pcd_transformed = copy.deepcopy(local_pcd)
       local_pcd_transformed.transform(transformation_matrix)
       for i in range(len(local_pcd.points)):
         [k, idx, _] = pcd_tree.search_knn_vector_3d(local_pcd_transformed.points[i], 1)
-        all_pair.append([i, idx[0]])
-      all_group.append(all_pair)
-    # ---- save the final_pair index in final_pairs, solved_index is assist variable ----
+        all_group.append([i, idx[0]])
+    # ---- save the final_pair index in final_pairs, graph and queue is assist variable ----
     final_pairs = list()
-    solved_index = list()
+    # construct graph, graph[i] store all the associated index with i
+    graph = {i:[] for i in range(len(local_pcd.points))}
     for all_pair in all_group:
-      for pair in tqdm(all_pair):
-        pair0_in_solved_index = pair[0] in solved_index
-        pair1_in_solved_index = pair[1] in solved_index
-        if pair0_in_solved_index is False and pair1_in_solved_index is False:
-          final_pairs.append(pair)
-          solved_index.extend(pair)
-        elif pair0_in_solved_index is True and pair1_in_solved_index is False:
-          # find which final_pair contain pair[0], and insert pair[1]
-          for final_pair in final_pairs:
-            if pair[0] in final_pair:
-              final_pair.append(pair[1])
-              solved_index.append(pair[1])
-              break
-        elif pair0_in_solved_index is False and pair1_in_solved_index is True:
-          # find which final_pair contain pair[1], and insert pair[0]
-          for final_pair in final_pairs:
-            if pair[1] in final_pair:
-              final_pair.append(pair[0])
-              solved_index.append(pair[0])
-              break
-        elif pair1_in_solved_index is True and pair1_in_solved_index is True:
-          # find pair[0] and pair[1] in final_pairs, they must be in the same final_pair, merge them
-          find_in_one_final_pair_flog = False
-          for final_pair in final_pairs:
-            if pair[0] in final_pair and pair[1] in final_pair:
-              find_in_one_final_pair_flog = True
-              break
-            elif pair[0] in final_pair and pair[1] not in final_pair:
-              final_pair_contain_pair0 = final_pair
-            elif pair[1] in final_pair and pair[0] not in final_pair:
-              final_pair_contain_pair1 = final_pair
-          if find_in_one_final_pair_flog is False:
-            # merge two final_pair
-            final_pair_contain_pair0.extend(final_pair_contain_pair1)
-            final_pairs.remove(final_pair_contain_pair1)
-        else:
-          raise ArithmeticError('some problem in logic, should not run this line')
+      graph[all_pair[0]].append(all_pair[1])
+      graph[all_pair[1]].append(all_pair[0])
+    for i in range(len(local_pcd.points)):
+      if i in graph.keys():
+        pair = [i]
+        queue = graph[i]  # used for broad first search
+        graph.pop(i)
+        while queue:
+          node = queue.pop(0)
+          if node in graph.keys():
+            pair.append(node)
+            queue.extend(graph[node])
+            graph.pop(node)
+        final_pairs.append(pair)
+    # ---- map local_index in final_pairs to global_index
+    for pair in final_pairs:
+      for i in range(len(pair)):
+        pair[i] = local_to_origin_index_map[pair[i]]
     self.pair['discrete sym'] = final_pairs
 
   def pair_n_fold_sym_pcd(self, n):
-    """ pair points in n_fold
+    """ pair points in n_fold sym
+
+    1. get the sym part pcd (named local_pcd)
+    2. for each symmetry, build the index pair correspondence
     """
-    # TODO
-    print("pair_n_fold_sym_pcd")
+    # ---- parse sym info ----
+    discrete_steps_count = n
+    sym = self.model_info['symmetries_continuous'][0]
+    axis = np.array(sym['axis'])
+    offset = np.array(sym['offset']).reshape((3, 1))
+    assert np.allclose(offset, np.zeros_like(offset))
+    # ---- build KD Tree and all_group (all paired points)
+    local_pcd = self.origin_pcd.select_by_index(self.sym_type_index[str(n) + '_fold'])
+    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index[str(n) + '_fold']))
+    pcd_tree = o3d.geometry.KDTreeFlann(local_pcd)
+    all_group = []
+    for step in range(1, discrete_steps_count):
+      R = transform.rotation_matrix(step * 2.0 * np.pi / discrete_steps_count, axis)[:3, :3]
+      t = -R.dot(offset) + offset
+      transformation_matrix = np.eye(4)
+      transformation_matrix[:3, :3] = R
+      transformation_matrix[:3, [3]] = t
+      local_pcd_transformed = copy.deepcopy(local_pcd)
+      local_pcd_transformed.transform(transformation_matrix)
+      for i in range(len(local_pcd.points)):
+        [k, idx, _] = pcd_tree.search_knn_vector_3d(local_pcd_transformed.points[i], 1)
+        all_group.append([i, idx[0]])
+    # ---- save the final_pair index in final_pairs, graph and queue is assist variable ----
+    final_pairs = list()
+    # construct graph, graph[i] store all the associated index with i
+    graph = {i:[] for i in range(len(local_pcd.points))}
+    for all_pair in all_group:
+      graph[all_pair[0]].append(all_pair[1])
+      graph[all_pair[1]].append(all_pair[0])
+    for i in range(len(local_pcd.points)):
+      if i in graph.keys():
+        pair = [i]
+        queue = graph[i]  # used for broad first search
+        graph.pop(i)
+        while queue:
+          node = queue.pop(0)
+          if node in graph.keys():
+            pair.append(node)
+            queue.extend(graph[node])
+            graph.pop(node)
+        final_pairs.append(pair)
+    # ---- map local_index in final_pairs to global_index
+    for pair in final_pairs:
+      for i in range(len(pair)):
+        pair[i] = local_to_origin_index_map[pair[i]]
+    self.pair[str(n)+'_fold'] = final_pairs
 
   def pair_continuous_sym_pcd(self):
     """ pair points in continuous sym, careful for small discontinuous part
     """
     # TODO
     print("pair_continuous_sym_pcd")
+
+  def divide_pointcloud_iterative(self, number_of_iteration, divide_number):
+    """ divide pcd in self.sym_type_index
+
+    """
+    pass
 
 
 class Settings:
@@ -669,7 +702,7 @@ class AppWindow:
     assert result['num_points'] == len(self.divided_pcd.origin_pcd.points)
     # ---- save the sym type information to self.divided_pcd ----
     self.divided_pcd.sym_type = result['sym_type']
-    self.divided_pcd.pair = result['pair']
+    self.divided_pcd.pair = result['pair'] if 'pair' in result.keys() else dict()
     self._listview_sym_chosed.set_items(self.divided_pcd.sym_type)
     num_points = 0
     for k, v in result['sym_type_index'].items():
@@ -855,11 +888,30 @@ class AppWindow:
         self.divided_pcd.pair_discrete_sym_pcd()
 
   def _on_buttion_vis_pcd(self):
-    """ vis points in color """
-    delta_x = self.divided_pcd.model_info['size_x'] / (255 * 2)
-    delta_y = self.divided_pcd.model_info['size_y'] / (255 * 2)
-    delta_z = self.divided_pcd.model_info['size_z'] / (255 * 2)
-    colors = np.zeros([self.divided_pcd.origin_pcd.points])
+    """ vis points in dissym color and sym color """
+    colors = self.divided_pcd.origin_pcd.points
+    colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
+    painted_without_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
+    painted_without_sym_pcd.translate((0, -1.2 * self.divided_pcd.model_info['size_y'], 0))
+    painted_without_sym_pcd.colors = o3d.utility.Vector3dVector(colors)
+    if self._scene.scene.has_geometry('painted_without_sym_pcd'):
+      self._scene.scene.remove_geometry('painted_without_sym_pcd')
+    self._scene.scene.add_geometry('painted_without_sym_pcd', painted_without_sym_pcd,  self.settings.obj_material)
+    sym_colors = np.zeros([len(self.divided_pcd.origin_pcd.points), 3])
+    for _, pairs in self.divided_pcd.pair.items():
+      for pair in pairs:
+        coordinate = np.empty((len(pair), 3))
+        for i, index in enumerate(pair):
+          coordinate[i] = self.divided_pcd.origin_pcd.points[index]
+        choosed_index = np.argmax(np.sum(coordinate, axis=1))
+        sym_colors[pair] = coordinate[choosed_index]
+    sym_colors = (sym_colors-np.min(sym_colors, 0)) / (np.max(sym_colors, 0) - np.min(sym_colors, 0))
+    painted_with_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
+    painted_with_sym_pcd.translate((0, -2.4 * self.divided_pcd.model_info['size_y'], 0))
+    painted_with_sym_pcd.colors = o3d.utility.Vector3dVector(sym_colors)
+    if self._scene.scene.has_geometry('painted_with_sym_pcd'):
+      self._scene.scene.remove_geometry('painted_with_sym_pcd')
+    self._scene.scene.add_geometry('painted_with_sym_pcd', painted_with_sym_pcd,  self.settings.obj_material)
 
 def main():
   """ Init GUI and run with pre-defined parameters """
