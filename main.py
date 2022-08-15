@@ -17,6 +17,7 @@ import open3d.visualization.rendering as rendering
 import os
 import json
 import cv2
+from sklearn.cluster import KMeans
 
 # PARAMETERS.
 ################################################################################
@@ -187,7 +188,6 @@ class DividedPcd:
         the nearest points with discrete transformation
     """
     symmetries_discrete = self.model_info['symmetries_discrete']
-    discrete_step_count = len(symmetries_discrete)
     all_dists = list()
     for sym in symmetries_discrete:
       transformation_matrix = np.asarray(sym).reshape(4,4)
@@ -207,7 +207,7 @@ class DividedPcd:
     symmetries_discrete = self.model_info['symmetries_discrete']
     local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['discrete sym'])
     pcd_tree = o3d.geometry.KDTreeFlann(local_pcd)
-    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['discrete sym']))
+    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['discrete sym'].tolist()))
     all_group = []
     for sym in symmetries_discrete:
       transformation_matrix = np.asarray(sym).reshape(4, 4)
@@ -255,7 +255,7 @@ class DividedPcd:
     assert np.allclose(offset, np.zeros_like(offset))
     # ---- build KD Tree and all_group (all paired points)
     local_pcd = self.origin_pcd.select_by_index(self.sym_type_index[str(n) + '_fold'])
-    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index[str(n) + '_fold']))
+    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index[str(n) + '_fold'].tolist()))
     pcd_tree = o3d.geometry.KDTreeFlann(local_pcd)
     all_group = []
     for step in range(1, discrete_steps_count):
@@ -294,17 +294,53 @@ class DividedPcd:
         pair[i] = local_to_origin_index_map[pair[i]]
     self.pair[str(n)+'_fold'] = final_pairs
 
-  def pair_continuous_sym_pcd(self):
-    """ pair points in continuous sym, careful for small discontinuous part
-    """
-    # TODO
-    print("pair_continuous_sym_pcd")
+  def pair_continuous_sym_pcd(self, iter_num=5):
+    """ pair points in continuous sym
 
-  def divide_pointcloud_iterative(self, number_of_iteration, divide_number):
+    1. get the sym part pcd (named local_pcd)
+    2. for each symmetry, build the index pair correspondence
+    """
+    # ---- parse sym info ----
+    sym = self.model_info['symmetries_continuous'][0]
+    axis = np.array(sym['axis'])
+    offset = np.array(sym['offset']).reshape((3, 1))
+    assert np.allclose(offset, np.zeros_like(offset))
+    # ---- map the coordinate of object to a plane
+    local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['continuous sym'])
+    local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['continuous sym'].tolist()))
+    local_pcd_point = np.asarray(local_pcd.points)
+    axis_orthogonal = np.array([1, 1, 1]) - axis
+    local_pcd_point_plane = np.column_stack((np.linalg.norm(local_pcd_point * axis_orthogonal,axis=1),local_pcd_point[:,2]))
+    final_pairs = [list(range(len(local_pcd.points)))]
+    for iter_count in range(iter_num):
+      print(f"iteration {iter_count} in pair continuous sym")
+      tmp_final_pairs = []
+      for pair_i, pair in enumerate(final_pairs):
+        print(f"sub interation {pair_i+1}/{np.power(2, iter_count)} in pair continuous sym")
+        if len(pair) <= 1:
+          tmp_final_pairs.append(pair)
+          continue
+        sub_pair_1 = []
+        sub_pair_2 = []
+        kmeans = KMeans(n_clusters=2, random_state=0).fit(local_pcd_point_plane[pair])
+        for i in range(len(pair)):
+          if kmeans.labels_[i] == 1:
+            sub_pair_1.append(pair[i])
+          else:
+            sub_pair_2.append(pair[i])
+        tmp_final_pairs.append(sub_pair_1)
+        tmp_final_pairs.append(sub_pair_2)
+      final_pairs = tmp_final_pairs.copy()
+
+    for pair in final_pairs:
+      for i in range(len(pair)):
+        pair[i] = local_to_origin_index_map[pair[i]]
+    self.pair['continuous sym'] = final_pairs
+  def divide_pointcloud_iterative(self, number_of_iteration=10, divide_number=2):
     """ divide pcd in self.sym_type_index
 
     """
-    pass
+    print(1)
 
 
 class Settings:
@@ -429,13 +465,15 @@ class AppWindow:
     self._button_load_result = gui.Button("Load Result")
     self._button_load_result.set_on_clicked(self._on_buttion_load_result)
 
-    self._collapsable_vert_6 = gui.CollapsableVert("Pair PCD", 0.33 * em, gui.Margins(em, 0, 0, 0))
+    self._collapsable_vert_6 = gui.CollapsableVert("Generate Binary Code", 0.33 * em, gui.Margins(em, 0, 0, 0))
     self._collapsable_vert_6.set_is_open(True)
     self._horiz_5 = gui.Horiz()
     self._button_pair_pcd = gui.Button("Pair PCD")
     self._button_pair_pcd.set_on_clicked(self._on_buttion_pair_pcd)
     self._button_vis_pcd = gui.Button("Vis PCD")
     self._button_vis_pcd.set_on_clicked(self._on_buttion_vis_pcd)
+    self._button_divide_iter = gui.Button("Divide Iter")
+    self._button_divide_iter.set_on_clicked(self._on_button_divide_iter)
 
     # ---- Layout ----
     self.window.add_child(self._scene)
@@ -490,6 +528,7 @@ class AppWindow:
     self._collapsable_vert_6.add_child(self._horiz_5)
     self._horiz_5.add_child(self._button_pair_pcd)
     self._horiz_5.add_child(self._button_vis_pcd)
+    self._horiz_5.add_child(self._button_divide_iter)
 
     # ---- Menu ----
 
@@ -798,6 +837,9 @@ class AppWindow:
     self._init_settings()
     # ---- visualize the object ----
     selected_obj_id = self._mesh_list.selected_index + 1
+    if selected_obj_id == 0:
+      print("should choose obj in Object Choose Panel")
+      return
     mesh = o3d.io.read_triangle_mesh(self.dataset_info.obj_tpath.format(obj_id=selected_obj_id))
     pcd = o3d.io.read_point_cloud("None")
     pcd.points = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
@@ -813,12 +855,18 @@ class AppWindow:
                          f"z = [{model_info['min_z']}, {model_info['min_z'] + model_info['size_z']}]"
 
     self._number_edit_threshold.set_value(self.divided_pcd.threshold)
-    self._slider_x_min.set_limits(model_info['min_x'], model_info['min_x']+model_info['size_x'])
-    self._slider_x_max.set_limits(model_info['min_x'], model_info['min_x']+model_info['size_x'])
-    self._slider_y_min.set_limits(model_info['min_y'], model_info['min_y'] + model_info['size_y'])
-    self._slider_y_max.set_limits(model_info['min_y'], model_info['min_y'] + model_info['size_y'])
-    self._slider_z_min.set_limits(model_info['min_z'], model_info['min_z'] + model_info['size_z'])
-    self._slider_z_max.set_limits(model_info['min_z'], model_info['min_z'] + model_info['size_z'])
+    self._slider_x_min.set_limits(model_info['min_x']*1.01, (model_info['min_x']+model_info['size_x'])*1.01)
+    self._slider_x_min.double_value = self._slider_x_min.get_minimum_value
+    self._slider_x_max.set_limits(model_info['min_x']*1.01, (model_info['min_x']+model_info['size_x'])*1.01)
+    self._slider_x_max.double_value = self._slider_x_max.get_maximum_value
+    self._slider_y_min.set_limits(model_info['min_y']*1.01, (model_info['min_y'] + model_info['size_y'])*1.01)
+    self._slider_y_min.double_value = self._slider_y_min.get_minimum_value
+    self._slider_y_max.set_limits(model_info['min_y']*1.01, (model_info['min_y'] + model_info['size_y'])*1.01)
+    self._slider_y_max.double_value = self._slider_y_max.get_maximum_value
+    self._slider_z_min.set_limits(model_info['min_z']*1.01, (model_info['min_z'] + model_info['size_z'])*1.01)
+    self._slider_z_min.double_value = self._slider_z_min.get_minimum_value
+    self._slider_z_max.set_limits(model_info['min_z']*1.01, (model_info['min_z'] + model_info['size_z'])*1.01)
+    self._slider_z_max.double_value = self._slider_z_max.get_maximum_value
 
     if 'symmetries_discrete' in model_info and 'symmetries_continuous' in model_info:
       self._object_info_label.text = 'the object is both discrete and ' \
@@ -877,15 +925,14 @@ class AppWindow:
   def _on_buttion_pair_pcd(self):
     """ pair points in self.divided_pcd.origin_pcd based on sym_type_index """
     for sym_type in self.divided_pcd.sym_type:
-      if sym_type in ['continuous sym']:
-        self.divided_pcd.pair_continuous_sym_pcd()
-      elif sym_type in ['no sym']:
-        pass
-      elif sym_type.endswith("_fold"):
+      if sym_type.endswith("_fold"):
         n = int(sym_type.split('_')[0])
         self.divided_pcd.pair_n_fold_sym_pcd(n)
       elif sym_type in ['discrete sym']:
         self.divided_pcd.pair_discrete_sym_pcd()
+      elif sym_type in ['continuous sym']:
+        self.divided_pcd.pair_continuous_sym_pcd()
+    self._on_buttion_vis_pcd()
 
   def _on_buttion_vis_pcd(self):
     """ vis points in dissym color and sym color """
@@ -903,7 +950,7 @@ class AppWindow:
         coordinate = np.empty((len(pair), 3))
         for i, index in enumerate(pair):
           coordinate[i] = self.divided_pcd.origin_pcd.points[index]
-        choosed_index = np.argmax(np.sum(coordinate, axis=1))
+        choosed_index = np.argmin(np.sum(coordinate, axis=1))
         sym_colors[pair] = coordinate[choosed_index]
     sym_colors = (sym_colors-np.min(sym_colors, 0)) / (np.max(sym_colors, 0) - np.min(sym_colors, 0))
     painted_with_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
@@ -912,6 +959,10 @@ class AppWindow:
     if self._scene.scene.has_geometry('painted_with_sym_pcd'):
       self._scene.scene.remove_geometry('painted_with_sym_pcd')
     self._scene.scene.add_geometry('painted_with_sym_pcd', painted_with_sym_pcd,  self.settings.obj_material)
+
+  def _on_button_divide_iter(self):
+    """ divide point in self.divided_pcd.pair """
+    print(1)
 
 def main():
   """ Init GUI and run with pre-defined parameters """
