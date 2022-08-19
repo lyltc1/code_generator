@@ -5,19 +5,19 @@ directory named models_GT_2_color, which contains file Class_CorresPoint0000XX.t
 
 """
 import copy
-from tqdm import tqdm
 
 from bop_toolkit_lib import inout
 from bop_toolkit_lib import transform
 
 import numpy as np
+import pandas as pd
 import open3d as o3d
 import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
 import os
 import json
-import cv2
 from sklearn.cluster import KMeans
+from k_means_constrained import KMeansConstrained
 
 # PARAMETERS.
 ################################################################################
@@ -105,7 +105,7 @@ class DividedPcd:
     # ---- ply symmetry info ----
     self.sym_type = list()
     self.sym_type_index = dict()
-    self.pair = dict()
+    self.pairs = dict()
     # ---- pcd label sym type ----
     self.threshold = 1.0
     self.clip_x_min = 0.0
@@ -239,7 +239,7 @@ class DividedPcd:
     for pair in final_pairs:
       for i in range(len(pair)):
         pair[i] = local_to_origin_index_map[pair[i]]
-    self.pair['discrete sym'] = final_pairs
+    self.pairs['symmetries_discrete'] = final_pairs
 
   def pair_n_fold_sym_pcd(self, n):
     """ pair points in n_fold sym
@@ -292,9 +292,9 @@ class DividedPcd:
     for pair in final_pairs:
       for i in range(len(pair)):
         pair[i] = local_to_origin_index_map[pair[i]]
-    self.pair[str(n)+'_fold'] = final_pairs
+    self.pairs[str(n)+'_fold'] = final_pairs
 
-  def pair_continuous_sym_pcd(self, iter_num=5):
+  def pair_continuous_sym_pcd(self, threshold=0.00001):
     """ pair points in continuous sym
 
     1. get the sym part pcd (named local_pcd)
@@ -305,43 +305,109 @@ class DividedPcd:
     axis = np.array(sym['axis'])
     offset = np.array(sym['offset']).reshape((3, 1))
     assert np.allclose(offset, np.zeros_like(offset))
+    # ---- adjust threshold based on object diameter ----
+    threshold = self.model_info['diameter'] * threshold
     # ---- map the coordinate of object to a plane
     local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['continuous sym'])
     local_to_origin_index_map = dict(zip(range(len(local_pcd.points)), self.sym_type_index['continuous sym'].tolist()))
     local_pcd_point = np.asarray(local_pcd.points)
     axis_orthogonal = np.array([1, 1, 1]) - axis
-    local_pcd_point_plane = np.column_stack((np.linalg.norm(local_pcd_point * axis_orthogonal,axis=1),local_pcd_point[:,2]))
-    final_pairs = [list(range(len(local_pcd.points)))]
-    for iter_count in range(iter_num):
-      print(f"iteration {iter_count} in pair continuous sym")
-      tmp_final_pairs = []
-      for pair_i, pair in enumerate(final_pairs):
-        print(f"sub interation {pair_i+1}/{np.power(2, iter_count)} in pair continuous sym")
-        if len(pair) <= 1:
-          tmp_final_pairs.append(pair)
-          continue
-        sub_pair_1 = []
-        sub_pair_2 = []
-        kmeans = KMeans(n_clusters=2, random_state=0).fit(local_pcd_point_plane[pair])
-        for i in range(len(pair)):
-          if kmeans.labels_[i] == 1:
-            sub_pair_1.append(pair[i])
-          else:
-            sub_pair_2.append(pair[i])
-        tmp_final_pairs.append(sub_pair_1)
-        tmp_final_pairs.append(sub_pair_2)
-      final_pairs = tmp_final_pairs.copy()
+    local_pcd_point_plane = np.column_stack((np.linalg.norm(local_pcd_point * axis_orthogonal,axis=1),local_pcd_point[:,np.where(axis==1)[0]]))
+    # ---- save final pairs in final_pairs ----
+    pairs_to_be_divided = [list(range(len(local_pcd.points)))]
+    final_pairs = []
+    while pairs_to_be_divided:
+      pair = pairs_to_be_divided.pop(0)
+      kmeans = KMeans(n_clusters=2, random_state=0).fit(local_pcd_point_plane[pair])
+      sub_pair_1 = np.array(pair)[np.where(kmeans.labels_ == 0)].tolist()
+      sub_pair_2 = np.array(pair)[np.where(kmeans.labels_ == 1)].tolist()
+      var_sub_pair_1 = np.sum(np.var(local_pcd_point_plane[sub_pair_1],axis=0))
+      var_sub_pair_2 = np.sum(np.var(local_pcd_point_plane[sub_pair_1], axis=0))
+      if var_sub_pair_1 < threshold or len(sub_pair_1) <= 1:
+        final_pairs.append(sub_pair_1)
+      else:
+        pairs_to_be_divided.append(sub_pair_1)
+      if var_sub_pair_2 < threshold or len(sub_pair_2) <= 1:
+        final_pairs.append(sub_pair_2)
+      else:
+        pairs_to_be_divided.append(sub_pair_2)
 
     for pair in final_pairs:
       for i in range(len(pair)):
         pair[i] = local_to_origin_index_map[pair[i]]
-    self.pair['continuous sym'] = final_pairs
-  def divide_pointcloud_iterative(self, number_of_iteration=10, divide_number=2):
-    """ divide pcd in self.sym_type_index
+    self.pairs['continuous sym'] = final_pairs
+
+  def pair_no_sym_pcd(self):
+    """ pair points in no sym
+
+    it's easy because every points belong to one pair
+    """
+    index = self.sym_type_index['no sym']
+    final_pairs = index[:,np.newaxis].tolist()
+    self.pairs['no sym'] = final_pairs
+
+  def choose_one_point_each_pair(self, coordinate_shift=False):
+    axis = None  # define which axis is the continuous sym axis, e.g. y: np.ndarray([0, 1, 0])
+    axis_orthogonal = None  # define which plane is orthogonal the sym axis, e.g. y: np.ndarray([1, 0, 1])
+    axis_keep = None  # define the index of 1 in axis, e.g. 1
+    multi = 1  # increase distance in axis direction, benefit for n-system-code generation
+    if 'continuous sym' in self.sym_type:
+      sym = self.model_info['symmetries_continuous'][0]
+      axis = np.array(sym['axis'])
+      axis_orthogonal = np.array([1, 1, 1]) - axis
+      axis_keep = np.where(axis == 1)[0][0]
+      axis_map = dict(zip([0, 1, 2], ['size_x', 'size_y', 'size_z']))
+      multi = self.model_info['diameter'] / self.model_info[axis_map[axis_keep]] * 5.0
+    # ---- 1.2 modify and save coordinate in select_coordinate and save select_index in select_index
+    select_indexes = []
+    select_coordinates = []
+    points = np.array(self.origin_pcd.points)
+    for i, (sym_type, pairs) in enumerate(self.pairs.items()):
+      for pair in pairs:
+        local_index = np.argmax(np.sum(points[pair], axis=1))
+        select_indexes.append(pair[local_index])
+        coordinate = points[pair[local_index]]
+        if sym_type == 'continuous sym':
+          coordinate[(axis_keep + 1) % 3] = np.linalg.norm(coordinate * axis_orthogonal)
+          coordinate[(axis_keep + 2) % 3] = 0.0
+          if coordinate_shift is True:
+            coordinate[axis_keep] = coordinate[axis_keep] * multi + \
+                                    0.55 * (multi + 1) * self.model_info[axis_map[axis_keep]]
+        select_coordinates.append(coordinate)
+    select_coordinates = np.asarray(select_coordinates)
+    return select_indexes, select_coordinates
+
+  def divide_pointcloud_iterative(self, select_indexes, select_coordinates, number_of_iteration=16, divide_number=2):
+    """ divide pcd in select_coordinates
 
     """
-    print(1)
+    #
+    assert len(select_indexes) == len(select_coordinates)
+    num_points = len(select_indexes)
+    local_to_origin_index_map = dict(zip(range(num_points), select_indexes))
+    # ---- iteratively generate n system code for select_coordinates
+    hierarchy_indices = {i: list() for i in range(number_of_iteration)}
+    hierarchy_indices[0].append(select_indexes)
+    for i in range(0, number_of_iteration):
+      print(f"divide {divide_number}-system-code iteration {i+1}/{number_of_iteration}")
+      for j in range(len(hierarchy_indices[i])):
+        output_indices = self._divide_cluster(hierarchy_indices[i][j], select_coordinates, divide_number)
+        hierarchy_indices[i+1].append(output_indices)
 
+  def _divide_cluster(self, input_indices, select_coordinates, divide_number):
+    """ divide input_indices into {divide_number} output_indices """
+    num_points = len(input_indices)
+    local_to_origin_index_map = dict(zip(range(num_points), input_indices))
+    size_max = pow(divide_number, int(np.ceil(np.log2(num_points)/np.log2(divide_number)))-1)
+    clf = KMeansConstrained(n_clusters=divide_number, size_max= size_max, random_state=0)
+    clf.fit_predict(points)
+
+    output_indices = []
+    for i in range(divide_number):
+      np.array(input_indices)[np.where(kmeans.labels_ == i)].tolist()
+      output_indices.append()
+
+    return output_indices
 
 class Settings:
   def __init__(self):
@@ -465,7 +531,7 @@ class AppWindow:
     self._button_load_result = gui.Button("Load Result")
     self._button_load_result.set_on_clicked(self._on_buttion_load_result)
 
-    self._collapsable_vert_6 = gui.CollapsableVert("Generate Binary Code", 0.33 * em, gui.Margins(em, 0, 0, 0))
+    self._collapsable_vert_6 = gui.CollapsableVert("Generate n System Code", 0.33 * em, gui.Margins(em, 0, 0, 0))
     self._collapsable_vert_6.set_is_open(True)
     self._horiz_5 = gui.Horiz()
     self._button_pair_pcd = gui.Button("Pair PCD")
@@ -701,7 +767,7 @@ class AppWindow:
     result['num_points'] = len(self.divided_pcd.origin_pcd.points)
     result['sym_type'] = self.divided_pcd.get_sym_type()
     result['sym_type_index'] = dict()
-    result['pair'] = self.divided_pcd.pair
+    result['pairs'] = self.divided_pcd.pairs
     num_points = 0
     for k, v in self.divided_pcd.sym_type_index.items():
       result['sym_type_index'][k] = v.tolist()
@@ -741,7 +807,7 @@ class AppWindow:
     assert result['num_points'] == len(self.divided_pcd.origin_pcd.points)
     # ---- save the sym type information to self.divided_pcd ----
     self.divided_pcd.sym_type = result['sym_type']
-    self.divided_pcd.pair = result['pair'] if 'pair' in result.keys() else dict()
+    self.divided_pcd.pairs = result['pairs'] if 'pairs' in result.keys() else dict()
     self._listview_sym_chosed.set_items(self.divided_pcd.sym_type)
     num_points = 0
     for k, v in result['sym_type_index'].items():
@@ -922,20 +988,57 @@ class AppWindow:
       self._scene.scene.remove_geometry('disym_pcd')
     self._scene.scene.add_geometry('disym_pcd', disym_pcd, self.settings.obj_material)
 
+  def _clear_scene_for_clip(self):
+    if self._scene.scene.has_geometry('clip_box'):
+      self._scene.scene.remove_geometry('clip_box')
+    if self._scene.scene.has_geometry('clip_pcd'):
+      self._scene.scene.remove_geometry('clip_pcd')
+    if self._scene.scene.has_geometry('clip_pcd_inverse'):
+      self._scene.scene.remove_geometry('clip_pcd_inverse')
+
+  def _clear_scene_for_pair(self):
+    if self._scene.scene.has_geometry('painted_without_sym_pcd'):
+      self._scene.scene.remove_geometry('painted_without_sym_pcd')
+    if self._scene.scene.has_geometry('painted_with_sym_pcd'):
+      self._scene.scene.remove_geometry('painted_with_sym_pcd')
+
   def _on_buttion_pair_pcd(self):
-    """ pair points in self.divided_pcd.origin_pcd based on sym_type_index """
+    """ pair points in self.divided_pcd.origin_pcd based on self.divided_pcd.sym_type_index,
+        the result pair points will be saved as dict in self.divided_pcd.pairs
+
+        e.g. pairs = dict( 'no sym': list(list())  # a list of paired points
+                           'continuous sym': list(list())  # a list of paired points
+                           '2_fold': list(list())  # a list of paired points
+                         )
+    """
+    # clear unrelated scene for better visualize
+    self._clear_scene_for_clip()
     for sym_type in self.divided_pcd.sym_type:
       if sym_type.endswith("_fold"):
         n = int(sym_type.split('_')[0])
+        print(f"start pairing {n}-fold sym pcd")
         self.divided_pcd.pair_n_fold_sym_pcd(n)
+        print(f"finish pairing {n}-fold sym pcd")
       elif sym_type in ['discrete sym']:
+        print("start pairing discrete sym pcd")
         self.divided_pcd.pair_discrete_sym_pcd()
+        print("finish pairing discrete sym pcd")
       elif sym_type in ['continuous sym']:
+        print("start pairing continuous sym pcd, will cost about 30 seconds")
+        print("note : if the final pair is not fine enough, you should set smaller val_threshold in function "
+              "pair_continuous_sym_pcd(val_threshold), default val_threshold = 0.00001*obj_diameter")
         self.divided_pcd.pair_continuous_sym_pcd()
+        print("finish pairing continuous sym pcd")
+      elif sym_type in ['no sym']:
+        print("start pairing no sym pcd")
+        self.divided_pcd.pair_no_sym_pcd()
+        print("finish pairing no sym pcd")
     self._on_buttion_vis_pcd()
 
   def _on_buttion_vis_pcd(self):
     """ vis points in dissym color and sym color """
+    # clear unrelated scene for better visualize
+    self._clear_scene_for_clip()
     colors = self.divided_pcd.origin_pcd.points
     colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
     painted_without_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
@@ -945,13 +1048,16 @@ class AppWindow:
       self._scene.scene.remove_geometry('painted_without_sym_pcd')
     self._scene.scene.add_geometry('painted_without_sym_pcd', painted_without_sym_pcd,  self.settings.obj_material)
     sym_colors = np.zeros([len(self.divided_pcd.origin_pcd.points), 3])
-    for _, pairs in self.divided_pcd.pair.items():
+    for sym_type, pairs in self.divided_pcd.pairs.items():
       for pair in pairs:
         coordinate = np.empty((len(pair), 3))
         for i, index in enumerate(pair):
           coordinate[i] = self.divided_pcd.origin_pcd.points[index]
-        choosed_index = np.argmin(np.sum(coordinate, axis=1))
-        sym_colors[pair] = coordinate[choosed_index]
+        if sym_type == 'continuous sym':
+          chosen_index = np.random.randint(len(pair))
+        else:
+          chosen_index = np.argmin(np.sum(coordinate,axis=1))
+        sym_colors[pair] = coordinate[chosen_index]
     sym_colors = (sym_colors-np.min(sym_colors, 0)) / (np.max(sym_colors, 0) - np.min(sym_colors, 0))
     painted_with_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
     painted_with_sym_pcd.translate((0, -2.4 * self.divided_pcd.model_info['size_y'], 0))
@@ -961,8 +1067,34 @@ class AppWindow:
     self._scene.scene.add_geometry('painted_with_sym_pcd', painted_with_sym_pcd,  self.settings.obj_material)
 
   def _on_button_divide_iter(self):
-    """ divide point in self.divided_pcd.pair """
-    print(1)
+    """ divide point in self.divided_pcd.pairs """
+    # ---- clear unrelated scene for better visualize -----
+    self._clear_scene_for_clip()
+    self._clear_scene_for_pair()
+    # ---- visualize the one point from one pair result without coordinate shift ----
+    # if coordinate_shift = False, then the coordinate will not change for better visualization
+    select_indexes, select_coordinates = self.divided_pcd.choose_one_point_each_pair(coordinate_shift=False)
+    one_point_each_pair_pcd_non_shift = o3d.io.read_point_cloud("None")
+    one_point_each_pair_pcd_non_shift.points = o3d.utility.Vector3dVector(select_coordinates)
+    colors = one_point_each_pair_pcd_non_shift.points
+    colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
+    one_point_each_pair_pcd_non_shift.translate((0, -1.2 * self.divided_pcd.model_info['size_y'], 0))
+    one_point_each_pair_pcd_non_shift.colors = o3d.utility.Vector3dVector(colors)
+    self._scene.scene.add_geometry('one_point_each_pair_pcd_non_shift', one_point_each_pair_pcd_non_shift, self.settings.obj_material)
+    # ---- visualize the the one point from one pair result with coordinate shift ----
+    # if coordinate_shift = True, the coordinate will multiply in sym axis for better cluster later
+    select_indexes, select_coordinates = self.divided_pcd.choose_one_point_each_pair(coordinate_shift=True)
+    one_point_each_pair_pcd_shift = o3d.io.read_point_cloud("None")
+    one_point_each_pair_pcd_shift.points = o3d.utility.Vector3dVector(select_coordinates)
+    colors = one_point_each_pair_pcd_shift.points
+    colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
+    one_point_each_pair_pcd_shift.translate((0, -2.4 * self.divided_pcd.model_info['size_y'], 0))
+    one_point_each_pair_pcd_shift.colors = o3d.utility.Vector3dVector(colors)
+    self._scene.scene.add_geometry('one_point_each_pair_pcd_shift', one_point_each_pair_pcd_shift, self.settings.obj_material)
+    # divide select_coordinates iteratively
+    print("you can change number of iteration and divide number here")
+    self.divided_pcd.divide_pointcloud_iterative(select_indexes, select_coordinates, number_of_iteration=16, divide_number=2)
+
 
 def main():
   """ Init GUI and run with pre-defined parameters """
