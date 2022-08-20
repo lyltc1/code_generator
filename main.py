@@ -106,6 +106,10 @@ class DividedPcd:
     self.sym_type = list()
     self.sym_type_index = dict()
     self.pairs = dict()
+    # ---- pcd final divide list
+    self.classified_indice = list()
+    self.number_of_iteration = 16
+    self.divide_number = 2
     # ---- pcd label sym type ----
     self.threshold = 1.0
     self.clip_x_min = 0.0
@@ -377,38 +381,60 @@ class DividedPcd:
     select_coordinates = np.asarray(select_coordinates)
     return select_indexes, select_coordinates
 
-  def divide_pointcloud_iterative(self, select_indexes, select_coordinates, number_of_iteration=16, divide_number=2):
-    """ divide pcd in select_coordinates
-
+  def divide_pointcloud_iterative(self, select_coordinates, number_of_iteration=16, divide_number=2):
+    """ divide pcd in select_coordinates:
+        hierarchy_indices = {0:[[0, 1, ..., num_points]                 ],
+                             1:[[...], [...]                            ],  # if divide_number = 2
+                             2:[[...], [...], [...], [...]              ],  # if divide_number = 2
+                             3:[divide_number^3 list                    ],
+                             ......
+                             number_of_iteration:[divide_number^16 list]]
+                            }
+        for example: i:[divide_number^i list] corresponding to code range(divide_number^i-1)
+        return hierarchy_indices[number_of_iteration]
     """
-    #
-    assert len(select_indexes) == len(select_coordinates)
-    num_points = len(select_indexes)
-    local_to_origin_index_map = dict(zip(range(num_points), select_indexes))
-    # ---- iteratively generate n system code for select_coordinates
-    hierarchy_indices = {i: list() for i in range(number_of_iteration)}
-    hierarchy_indices[0].append(select_indexes)
+    # ---- iteratively generate n system code for select_coordinates in local index ----
+    num_points = len(select_coordinates)
+    hierarchy_indices = {i: list() for i in range(number_of_iteration+1)}
+    hierarchy_indices[0].append(list(range(num_points)))
     for i in range(0, number_of_iteration):
       print(f"divide {divide_number}-system-code iteration {i+1}/{number_of_iteration}")
       for j in range(len(hierarchy_indices[i])):
         output_indices = self._divide_cluster(hierarchy_indices[i][j], select_coordinates, divide_number)
-        hierarchy_indices[i+1].append(output_indices)
-
-  def _divide_cluster(self, input_indices, select_coordinates, divide_number):
+        hierarchy_indices[i+1].extend(output_indices)
+    return hierarchy_indices[number_of_iteration]
+  def _divide_cluster(self, input_indices, coordinates, divide_number):
     """ divide input_indices into {divide_number} output_indices """
     num_points = len(input_indices)
-    local_to_origin_index_map = dict(zip(range(num_points), input_indices))
+    if num_points < divide_number:
+      output_indices = []
+      for i in range(num_points):
+        output_indices.append([input_indices[i]])
+      for i in range(divide_number - num_points):
+        output_indices.append([])
+      return output_indices
     size_max = pow(divide_number, int(np.ceil(np.log2(num_points)/np.log2(divide_number)))-1)
-    clf = KMeansConstrained(n_clusters=divide_number, size_max= size_max, random_state=0)
-    clf.fit_predict(points)
-
+    clf = KMeansConstrained(n_clusters=divide_number, size_max=size_max, random_state=0)
+    clf.fit_predict(coordinates[input_indices])
     output_indices = []
     for i in range(divide_number):
-      np.array(input_indices)[np.where(kmeans.labels_ == i)].tolist()
-      output_indices.append()
-
+      output_indices.append(np.array(input_indices)[np.where(clf.labels_ == i)].tolist())
     return output_indices
-
+  def indice_completion(self, input_indices):
+    # construct graph, graph[i] store all the associated index with i
+    graph = {i: [] for i in range(len(self.origin_pcd.points))}
+    for pairs in self.pairs.values():
+      for pair in pairs:
+        for item in pair:
+          graph[item].extend(pair)
+    # calculate output_indice
+    output_indice = []
+    for pair in input_indices:
+      tmp_pair = []
+      for item in pair:
+        tmp_pair.extend(graph[item])
+      output_indice.append(tmp_pair)
+    return output_indice
 class Settings:
   def __init__(self):
     # ---- scene visual setting ----
@@ -534,12 +560,15 @@ class AppWindow:
     self._collapsable_vert_6 = gui.CollapsableVert("Generate n System Code", 0.33 * em, gui.Margins(em, 0, 0, 0))
     self._collapsable_vert_6.set_is_open(True)
     self._horiz_5 = gui.Horiz()
-    self._button_pair_pcd = gui.Button("Pair PCD")
+    self._button_pair_pcd = gui.Button("Pair")
     self._button_pair_pcd.set_on_clicked(self._on_buttion_pair_pcd)
-    self._button_vis_pcd = gui.Button("Vis PCD")
+    self._button_vis_pcd = gui.Button("Vis Pair")
     self._button_vis_pcd.set_on_clicked(self._on_buttion_vis_pcd)
     self._button_divide_iter = gui.Button("Divide Iter")
     self._button_divide_iter.set_on_clicked(self._on_button_divide_iter)
+    self._horiz_6 = gui.Horiz()
+    self._button_vis_divide = gui.Button("Vis Divide")
+    self._button_vis_divide.set_on_clicked(self._on_button_vis_divide)
 
     # ---- Layout ----
     self.window.add_child(self._scene)
@@ -595,6 +624,8 @@ class AppWindow:
     self._horiz_5.add_child(self._button_pair_pcd)
     self._horiz_5.add_child(self._button_vis_pcd)
     self._horiz_5.add_child(self._button_divide_iter)
+    self._collapsable_vert_6.add_child(self._horiz_6)
+    self._horiz_6.add_child(self._button_vis_divide)
 
     # ---- Menu ----
 
@@ -1092,8 +1123,30 @@ class AppWindow:
     one_point_each_pair_pcd_shift.colors = o3d.utility.Vector3dVector(colors)
     self._scene.scene.add_geometry('one_point_each_pair_pcd_shift', one_point_each_pair_pcd_shift, self.settings.obj_material)
     # divide select_coordinates iteratively
-    print("you can change number of iteration and divide number here")
-    self.divided_pcd.divide_pointcloud_iterative(select_indexes, select_coordinates, number_of_iteration=16, divide_number=2)
+    print("you can change number of iteration and divide number in DividedPcd")
+    classified_indice_local = self.divided_pcd.divide_pointcloud_iterative(select_coordinates, self.divided_pcd.number_of_iteration, self.divided_pcd.divide_number)
+    local_to_origin_index_map = dict(zip(range(len(select_coordinates)), select_indexes))
+    classified_indice_global = []
+    for l_local in classified_indice_local:
+      l_global = [local_to_origin_index_map[l] for l in l_local]
+      classified_indice_global.append(l_global)
+    self.divided_pcd.classified_indice = self.divided_pcd.indice_completion(classified_indice_global)
+  def _on_button_vis_divide(self):
+    # self._scene.scene.clear_geometry()
+    number_of_iteration = self.divided_pcd.number_of_iteration
+    divide_number = self.divided_pcd.divide_number
+    visual_pcd = []
+
+    for i in range(number_of_iteration):
+      visual_pcd.append(copy.deepcopy(self.divided_pcd.origin_pcd))
+      colors = np.empty([len(self.divided_pcd.origin_pcd.points), 3])
+      for j, l in enumerate(self.divided_pcd.classified_indice):
+        bit = j // pow(divide_number, number_of_iteration - 1 - i) % divide_number
+        colors[l] = bit * np.array([1.0, 1.0, 1.0]) / divide_number
+      visual_pcd[i].colors = o3d.utility.Vector3dVector(colors)
+      visual_pcd[i].translate((0, 1.2 * self.divided_pcd.model_info['size_y'] * (i+1), 0))
+      self._scene.scene.add_geometry('visual_pcd_'+str(i), visual_pcd[i], self.settings.obj_material)
+    print(1)
 
 
 def main():
