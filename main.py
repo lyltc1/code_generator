@@ -99,9 +99,10 @@ class DatasetInfo:
 
 
 class DividedPcd:
-  def __init__(self, pcd = None, model_info = None):
-    self.origin_pcd = pcd
-    self.model_info = model_info
+  def __init__(self):
+    self.origin_mesh = None
+    self.origin_pcd = None
+    self.model_info = None
     # ---- ply symmetry info ----
     self.sym_type = list()
     self.sym_type_index = dict()
@@ -132,6 +133,8 @@ class DividedPcd:
       pass
   def set_pcd(self, pcd):
     self.origin_pcd = pcd
+  def set_mesh(self, mesh):
+    self.origin_mesh = mesh
   def set_model_info(self, model_info):
     self.model_info = model_info
   def set_threshold(self, threshold):
@@ -435,6 +438,29 @@ class DividedPcd:
         tmp_pair.extend(graph[item])
       output_indice.append(tmp_pair)
     return output_indice
+  def generate_vertex_id_to_class(self):
+    # ---- generate vertex_id to class
+    vertex_id_to_class = list(range(len(self.origin_pcd.points)))
+    for i, l in enumerate(self.classified_indice):
+      for item in l:
+        vertex_id_to_class[item] = i
+    # ---- generate face_id to class
+    triangles = np.array(self.origin_mesh.triangles)
+    num_of_faces = len(triangles)
+    face_id_to_class = np.empty(num_of_faces)
+    for i in range(num_of_faces):
+      point_index_0 = triangles[i, 0]
+      point_index_1 = triangles[i, 1]
+      point_index_2 = triangles[i, 2]
+      point_0_class = vertex_id_to_class[point_index_0]
+      point_1_class = vertex_id_to_class[point_index_1]
+      point_2_class = vertex_id_to_class[point_index_2]
+      # If two vertices of this face have the same class_id, the face is labeled with this class_id.
+      if point_1_class == point_2_class:
+        face_id_to_class[i] = point_1_class
+      else:
+        face_id_to_class[i] = point_0_class
+    class_to_vertex_id  # TODO
 class Settings:
   def __init__(self):
     # ---- scene visual setting ----
@@ -804,6 +830,9 @@ class AppWindow:
       result['sym_type_index'][k] = v.tolist()
       num_points = num_points + len(v)
     assert num_points == result['num_points']
+    result['divide_number'] = self.divided_pcd.divide_number
+    result['number_of_iteration'] = self.divided_pcd.number_of_iteration
+    result['classified_indice'] = self.divided_pcd.classified_indice
     json_path = self.dataset_info.obj_tpath.replace('.obj', '.json').format(obj_id=result['obj_id'])
     if os.path.exists(json_path):
       self.window.show_message_box('Error Saving', f'json_path exists, remove {json_path} before save')
@@ -845,6 +874,13 @@ class AppWindow:
       self.divided_pcd.sym_type_index[k] = np.array(v)
       num_points = num_points + len(v)
     assert result['num_points'] == num_points
+    #
+    if 'divide_number' in result.keys():
+      self.divided_pcd.divide_number = result['divide_number']
+    if 'number_of_iteration' in result.keys():
+      self.divided_pcd.number_of_iteration = result['number_of_iteration']
+    if 'classified_indice' in result.keys():
+      self.divided_pcd.classified_indice = result['classified_indice']
 
   def _on_number_edit_threshold(self, num):
     self.divided_pcd.set_threshold(num)
@@ -946,6 +982,7 @@ class AppWindow:
     model_info = self.dataset_info.models_info[selected_obj_id]
 
     self.divided_pcd.set_pcd(pcd)
+    self.divided_pcd.set_mesh(mesh)
     self.divided_pcd.set_model_info(model_info)
     self._label_4.text = f"x = [{model_info['min_x']}, {model_info['min_x']+model_info['size_x']}]" \
                          f"y = [{model_info['min_y']}, {model_info['min_y'] + model_info['size_y']}]" \
@@ -1131,6 +1168,7 @@ class AppWindow:
       l_global = [local_to_origin_index_map[l] for l in l_local]
       classified_indice_global.append(l_global)
     self.divided_pcd.classified_indice = self.divided_pcd.indice_completion(classified_indice_global)
+
   def _on_button_vis_divide(self):
     # self._scene.scene.clear_geometry()
     number_of_iteration = self.divided_pcd.number_of_iteration
@@ -1147,6 +1185,7 @@ class AppWindow:
       visual_pcd[i].translate((0, 1.2 * self.divided_pcd.model_info['size_y'] * (i+1), 0))
       self._scene.scene.add_geometry('visual_pcd_'+str(i), visual_pcd[i], self.settings.obj_material)
     print(1)
+    self.divided_pcd.generate_vertex_id_to_class()
 
 
 def main():
