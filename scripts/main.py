@@ -28,7 +28,7 @@ p = {
   # See dataset_params.py for options.
   'dataset': 'tless',
 
-  'model_type': None  # tless has cad model type
+  'model_type': 'cad'  # tless has cad model type or None for other dataset
 }
 
 DEBUG = True
@@ -80,7 +80,9 @@ def get_model_params(datasets_path, dataset_name, model_type=None):
     'obj_tpath': os.path.join(models_path, 'obj_{obj_id:06d}.obj'),
 
     # Path to a file with meta information about the object models.
-    'models_info_path': os.path.join(models_path, 'models_info.json')
+    'models_info_path': os.path.join(models_path, 'models_info.json'),
+    # Path to save models_GT_color_v2
+    'save_path': os.path.join(datasets_path, dataset_name, 'models_GT_color_v2'),
   }
 
   return p
@@ -96,10 +98,12 @@ class DatasetInfo:
     self.ply_tpath = dp_model['ply_tpath']
     self.obj_tpath = dp_model['obj_tpath']
     self.obj_ids = dp_model['obj_ids']
+    self.save_path = dp_model['save_path']
 
 
 class DividedPcd:
   def __init__(self):
+    self.obj_id = None
     self.origin_mesh = None
     self.origin_pcd = None
     self.model_info = None
@@ -111,6 +115,7 @@ class DividedPcd:
     self.classified_indice = list()
     self.number_of_iteration = 16
     self.divide_number = 2
+    self.labeled_mesh = None
     # ---- pcd label sym type ----
     self.threshold = 1.0
     self.clip_x_min = 0.0
@@ -438,16 +443,16 @@ class DividedPcd:
         tmp_pair.extend(graph[item])
       output_indice.append(tmp_pair)
     return output_indice
-  def generate_vertex_id_to_class(self):
-    # ---- generate vertex_id to class
+  def generate_mesh_with_labeled_color(self):
+    # ---- generate vertex_id to class ----
     vertex_id_to_class = list(range(len(self.origin_pcd.points)))
     for i, l in enumerate(self.classified_indice):
       for item in l:
         vertex_id_to_class[item] = i
-    # ---- generate face_id to class
+    # ---- generate face_id to class ----
     triangles = np.array(self.origin_mesh.triangles)
     num_of_faces = len(triangles)
-    face_id_to_class = np.empty(num_of_faces)
+    face_id_to_class = np.empty(num_of_faces, dtype=int)
     for i in range(num_of_faces):
       point_index_0 = triangles[i, 0]
       point_index_1 = triangles[i, 1]
@@ -460,7 +465,43 @@ class DividedPcd:
         face_id_to_class[i] = point_1_class
       else:
         face_id_to_class[i] = point_0_class
-    class_to_vertex_id  # TODO
+    # ---- generate mesh with labeled color ----
+    points = np.array(self.origin_pcd.points)
+    labeled_mesh = o3d.io.read_triangle_mesh("None")
+    labeled_triangles = np.empty_like(triangles, dtype=int)
+    labeled_points = np.empty([num_of_faces * 3, 3])
+    labeled_colors = np.empty([num_of_faces * 3, 3])
+    for i in range(num_of_faces):
+      class_id = face_id_to_class[i]
+      color_r = class_id & int('0x0000FF', 16)
+      color_g = (class_id & int('0x00FF00', 16)) >> 8
+      color_b = (class_id & int('0xFF0000', 16)) >> 16
+      for j in range(3):
+        labeled_points[i*3+j] = points[triangles[i, j]]
+        labeled_colors[i*3+j] = np.array([color_r, color_g, color_b]) / 255.
+      labeled_triangles[i] = np.array([3*i, 3*i+1, 3*i+2])
+    labeled_mesh.vertices = o3d.utility.Vector3dVector(labeled_points)
+    labeled_mesh.vertex_colors = o3d.utility.Vector3dVector(labeled_colors)
+    labeled_mesh.triangles = o3d.utility.Vector3iVector(labeled_triangles)
+    self.labeled_mesh = labeled_mesh
+
+  def generate_pcd_with_labeled_color(self):
+    num_points = len(self.origin_pcd.points)
+    # ---- generate vertex_id to class ----
+    vertex_id_to_class = list(range(num_points))
+    for i, l in enumerate(self.classified_indice):
+      for item in l:
+        vertex_id_to_class[item] = i
+    # ---- generate color ----
+    labeled_colors = np.empty([num_points, 3])
+    for i in range(num_points):
+      class_id = vertex_id_to_class[i]
+      color_r = class_id & int('0x0000FF', 16)
+      color_g = (class_id & int('0x00FF00', 16)) >> 8
+      color_b = (class_id & int('0xFF0000', 16)) >> 16
+      labeled_colors[i] = np.array([color_r, color_g, color_b]) / 255.
+    self.origin_pcd.colors = o3d.utility.Vector3dVector(labeled_colors)
+
 class Settings:
   def __init__(self):
     # ---- scene visual setting ----
@@ -595,6 +636,10 @@ class AppWindow:
     self._horiz_6 = gui.Horiz()
     self._button_vis_divide = gui.Button("Vis Divide")
     self._button_vis_divide.set_on_clicked(self._on_button_vis_divide)
+    self._button_vis_ply = gui.Button("Vis Ply")
+    self._button_vis_ply.set_on_clicked(self._on_button_vis_ply)
+    self._button_save_final = gui.Button("Save Final")
+    self._button_save_final.set_on_clicked(self._on_button_save_final)
 
     # ---- Layout ----
     self.window.add_child(self._scene)
@@ -652,6 +697,8 @@ class AppWindow:
     self._horiz_5.add_child(self._button_divide_iter)
     self._collapsable_vert_6.add_child(self._horiz_6)
     self._horiz_6.add_child(self._button_vis_divide)
+    self._horiz_6.add_child(self._button_vis_ply)
+    self._horiz_6.add_child(self._button_save_final)
 
     # ---- Menu ----
 
@@ -978,9 +1025,10 @@ class AppWindow:
     pcd.points = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
 
     self._scene.scene.clear_geometry()
-    self._scene.scene.add_geometry("origin_pcd", pcd, self.settings.obj_material)
+    # self._scene.scene.add_geometry("origin_pcd", pcd, self.settings.obj_material)
+    self._scene.scene.add_geometry("origin_pcd", mesh, self.settings.obj_material)
     model_info = self.dataset_info.models_info[selected_obj_id]
-
+    self.divided_pcd.obj_id = selected_obj_id
     self.divided_pcd.set_pcd(pcd)
     self.divided_pcd.set_mesh(mesh)
     self.divided_pcd.set_model_info(model_info)
@@ -1184,9 +1232,56 @@ class AppWindow:
       visual_pcd[i].colors = o3d.utility.Vector3dVector(colors)
       visual_pcd[i].translate((0, 1.2 * self.divided_pcd.model_info['size_y'] * (i+1), 0))
       self._scene.scene.add_geometry('visual_pcd_'+str(i), visual_pcd[i], self.settings.obj_material)
-    print(1)
-    self.divided_pcd.generate_vertex_id_to_class()
 
+  def _on_button_vis_ply(self):
+    self.divided_pcd.generate_mesh_with_labeled_color()
+    self._scene.scene.clear_geometry()
+    self._scene.scene.add_geometry('labeled_mesh', self.divided_pcd.labeled_mesh, self.settings.obj_material)
+    self.divided_pcd.generate_pcd_with_labeled_color()
+    pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
+    pcd.translate((0, 1.2 * self.divided_pcd.model_info['size_y'], 0))
+    self._scene.scene.add_geometry('labeled_pcd', pcd, self.settings.obj_material)
+    selected_obj_id = self._mesh_list.selected_index + 1
+    mesh = o3d.io.read_triangle_mesh(self.dataset_info.obj_tpath.format(obj_id=selected_obj_id))
+    mesh.vertex_colors = o3d.utility.Vector3dVector(np.array(pcd.colors))
+    self.divided_pcd.labeled_mesh_v2 = copy.deepcopy(mesh)
+    mesh.translate((0, -1.2 * self.divided_pcd.model_info['size_y'], 0))
+    self._scene.scene.add_geometry('labeled', mesh, self.settings.obj_material)
+  def _on_button_save_final(self):
+    # save model_mesh_v1
+    save_model_path = os.path.join(self.dataset_info.save_path,
+                                   'obj_{obj_id:06d}_v1.ply'.format(obj_id=self.divided_pcd.obj_id))
+    if not os.path.exists(self.dataset_info.save_path):
+      os.makedirs(self.dataset_info.save_path)
+    o3d.io.write_triangle_mesh(save_model_path, self.divided_pcd.labeled_mesh, write_ascii=True)
+    # save model_mesh_v2
+    save_model_path = os.path.join(self.dataset_info.save_path,
+                                   'obj_{obj_id:06d}_v2.ply'.format(obj_id=self.divided_pcd.obj_id))
+    if not os.path.exists(self.dataset_info.save_path):
+      os.makedirs(self.dataset_info.save_path)
+    o3d.io.write_triangle_mesh(save_model_path, self.divided_pcd.labeled_mesh_v2, write_ascii=True)
+    # save model_pcd_v1
+    save_model_path = os.path.join(self.dataset_info.save_path,
+                                   'obj_{obj_id:06d}_v1.xyzrgb'.format(obj_id=self.divided_pcd.obj_id))
+    if not os.path.exists(self.dataset_info.save_path):
+      os.makedirs(self.dataset_info.save_path)
+    o3d.io.write_point_cloud(save_model_path, self.divided_pcd.origin_pcd)
+
+    # save corresponding
+    save_corresponding_path = os.path.join(self.dataset_info.save_path,
+                                   'Class_CorresPoint{obj_id:06d}.json'.format(obj_id=self.divided_pcd.obj_id))
+    result = dict()
+    result['class'] = len(self.divided_pcd.classified_indice)
+    result['divide_number'] = self.divided_pcd.divide_number
+    result['number_of_iteration'] = self.divided_pcd.number_of_iteration
+    result['corresponding'] = dict()
+    points = np.array(self.divided_pcd.origin_pcd.points)
+    for i, coordinate in enumerate(self.divided_pcd.classified_indice):
+      result['corresponding'][i] = list()
+      for c in coordinate:
+        result['corresponding'][i].append(points[c].tolist())
+    with open(save_corresponding_path, 'w') as f:
+      f.write(json.dumps(result))
 
 def main():
   """ Init GUI and run with pre-defined parameters """
