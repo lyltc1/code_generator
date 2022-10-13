@@ -87,5 +87,5 @@ if __name__ == "__main__":
     bop_path = root / 'data' / 'bop'
     cfg = config[args.dataset]
     cfg.dataset = args.dataset
-    for data_folder in [cfg.test_folder, cfg.train_folder, 'pbr']:
+    for data_folder in [cfg.test_folder, cfg.train_folder, 'train_pbr']:
         generate_GT_images(bop_path, data_folder, cfg)

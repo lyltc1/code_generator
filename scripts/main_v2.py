@@ -91,7 +91,6 @@ class DatasetInfo:
 class DividedPcd:
   def __init__(self):
     self.obj_id = None
-    self.origin_mesh = None
     self.origin_pcd = None
     self.model_info = None
     # ---- ply symmetry info ----
@@ -125,8 +124,6 @@ class DividedPcd:
       pass
   def set_pcd(self, pcd):
     self.origin_pcd = pcd
-  def set_mesh(self, mesh):
-    self.origin_mesh = mesh
   def set_model_info(self, model_info):
     self.model_info = model_info
   def set_threshold(self, threshold):
@@ -418,62 +415,6 @@ class DividedPcd:
     for i in range(divide_number):
       output_indices.append(np.array(input_indices)[np.where(kmeans.labels_ == i)].tolist())
     return output_indices
-  # def indice_completion(self, input_indices):
-  #   # construct graph, graph[i] store all the associated index with i
-  #   graph = {i: [] for i in range(len(self.origin_pcd.points))}
-  #   for pairs in self.pairs.values():
-  #     for pair in pairs:
-  #       for item in pair:
-  #         graph[item].extend(pair)
-  #   # calculate output_indice
-  #   output_indice = []
-  #   for pair in input_indices:
-  #     tmp_pair = []
-  #     for item in pair:
-  #       tmp_pair.extend(graph[item])
-  #     output_indice.append(tmp_pair)
-  #   return output_indice
-  def generate_mesh_with_labeled_color_with_additional_points(self):
-    # ---- generate vertex_id to class ----
-    vertex_id_to_class = list(range(len(self.origin_pcd.points)))
-    for i, l in enumerate(self.classified_indice):
-      for item in l:
-        vertex_id_to_class[item] = i
-    # ---- generate face_id to class ----
-    triangles = np.array(self.origin_mesh.triangles)
-    num_of_faces = len(triangles)
-    face_id_to_class = np.empty(num_of_faces, dtype=int)
-    for i in range(num_of_faces):
-      point_index_0 = triangles[i, 0]
-      point_index_1 = triangles[i, 1]
-      point_index_2 = triangles[i, 2]
-      point_0_class = vertex_id_to_class[point_index_0]
-      point_1_class = vertex_id_to_class[point_index_1]
-      point_2_class = vertex_id_to_class[point_index_2]
-      # If two vertices of this face have the same class_id, the face is labeled with this class_id.
-      if point_1_class == point_2_class:
-        face_id_to_class[i] = point_1_class
-      else:
-        face_id_to_class[i] = point_0_class
-    # ---- generate mesh with labeled color ----
-    points = np.array(self.origin_pcd.points)
-    labeled_mesh = o3d.io.read_triangle_mesh("None")
-    labeled_triangles = np.empty_like(triangles, dtype=int)
-    labeled_points = np.empty([num_of_faces * 3, 3])
-    labeled_colors = np.empty([num_of_faces * 3, 3])
-    for i in range(num_of_faces):
-      class_id = face_id_to_class[i]
-      color_r = class_id & int('0x0000FF', 16)
-      color_g = (class_id & int('0x00FF00', 16)) >> 8
-      color_b = (class_id & int('0xFF0000', 16)) >> 16
-      for j in range(3):
-        labeled_points[i*3+j] = points[triangles[i, j]]
-        labeled_colors[i*3+j] = np.array([color_r, color_g, color_b]) / 255.
-      labeled_triangles[i] = np.array([3*i, 3*i+1, 3*i+2])
-    labeled_mesh.vertices = o3d.utility.Vector3dVector(labeled_points)
-    labeled_mesh.vertex_colors = o3d.utility.Vector3dVector(labeled_colors)
-    labeled_mesh.triangles = o3d.utility.Vector3iVector(labeled_triangles)
-    self.labeled_mesh_additional_points = labeled_mesh
 
   def generate_pcd_with_labeled_color_without_additional_points(self):
     num_points = len(self.origin_pcd.points)
@@ -1019,12 +960,10 @@ class AppWindow:
     pcd.points = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
 
     self._scene.scene.clear_geometry()
-    # self._scene.scene.add_geometry("origin_pcd", pcd, self.settings.obj_material)
-    self._scene.scene.add_geometry("origin_pcd", mesh, self.settings.obj_material)
+    self._scene.scene.add_geometry("mesh", mesh, self.settings.obj_material)
     model_info = self.dataset_info.models_info[selected_obj_id]
     self.divided_pcd.obj_id = selected_obj_id
     self.divided_pcd.set_pcd(pcd)
-    self.divided_pcd.set_mesh(mesh)
     self.divided_pcd.set_model_info(model_info)
     self._label_4.text = f"x = [{model_info['min_x']}, {model_info['min_x']+model_info['size_x']}]" \
                          f"y = [{model_info['min_y']}, {model_info['min_y'] + model_info['size_y']}]" \
@@ -1149,6 +1088,7 @@ class AppWindow:
     """ vis points in dissym color and sym color """
     # clear unrelated scene for better visualize
     self._clear_scene_for_clip()
+    self._scene.scene.clear_geometry()
     colors = self.divided_pcd.origin_pcd.points
     colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
     painted_without_sym_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
@@ -1176,6 +1116,38 @@ class AppWindow:
       self._scene.scene.remove_geometry('painted_with_sym_pcd')
     self._scene.scene.add_geometry('painted_with_sym_pcd', painted_with_sym_pcd,  self.settings.obj_material)
 
+    map_coordinate = self.divided_pcd.map_coordinates_each_pair_to_same(coordinate_shift=False)
+    one_point_each_pair_pcd_non_shift = o3d.io.read_point_cloud("None")
+    one_point_each_pair_pcd_non_shift.points = o3d.utility.Vector3dVector(map_coordinate)
+    colors = one_point_each_pair_pcd_non_shift.points
+    colors = (colors-np.min(colors, 0)) / (np.max(colors, 0) - np.min(colors, 0))
+    one_point_each_pair_pcd_non_shift.translate((0, -3.6 * self.divided_pcd.model_info['size_y'], 0))
+    one_point_each_pair_pcd_non_shift.colors = o3d.utility.Vector3dVector(colors)
+    self._scene.scene.add_geometry('one_point_each_pair_pcd_non_shift', one_point_each_pair_pcd_non_shift, self.settings.obj_material)
+    self._debug_for_vis_big_pairs_in_symmetries_discrete()
+
+  def _debug_for_vis_big_pairs_in_symmetries_discrete(self):
+    """ visualize for multi points pair in one pair """
+    tmp_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
+    tmp_color = np.zeros([len(tmp_pcd.points), 3])
+    num_pair_more_than_100 = 0
+    for pair in self.divided_pcd.pairs['symmetries_discrete']:
+      if len(pair) > 5:
+        num_pair_more_than_100 += 1
+        coordinate = np.empty((len(pair), 3))
+        for i, index in enumerate(pair):
+          coordinate[i] = self.divided_pcd.origin_pcd.points[index]
+        if len(pair) == 8:
+          print(coordinate)
+          print(pair)
+          break
+        chosen_index = np.random.randint(len(pair))
+        tmp_color[pair] = coordinate[chosen_index]
+    tmp_color = (tmp_color-np.min(tmp_color, 0)) / (np.max(tmp_color, 0) - np.min(tmp_color, 0))
+    tmp_pcd.translate((0, -4.8 * self.divided_pcd.model_info['size_y'], 0))
+    tmp_pcd.colors = o3d.utility.Vector3dVector(tmp_color)
+    self._scene.scene.add_geometry('tmp_pcd', tmp_pcd,  self.settings.obj_material)
+    print(f"num_pair_more_than_100 = {num_pair_more_than_100}")
   def _on_button_divide_iter(self):
     """ divide point in self.divided_pcd.pairs """
     # ---- clear unrelated scene for better visualize -----
@@ -1196,12 +1168,6 @@ class AppWindow:
     print("you can change number of iteration and divide number in DividedPcd")
     classified_indice = self.divided_pcd.divide_pointcloud_iterative(map_coordinate, self.divided_pcd.number_of_iteration, self.divided_pcd.divide_number)
     self.divided_pcd.classified_indice = classified_indice
-    # local_to_origin_index_map = dict(zip(range(len(select_coordinates)), select_indexes))
-    # classified_indice_global = []
-    # for l_local in classified_indice_local:
-    #   l_global = [local_to_origin_index_map[l] for l in l_local]
-    #   classified_indice_global.append(l_global)
-    # self.divided_pcd.classified_indice = self.divided_pcd.indice_completion(classified_indice_global)
 
   def _on_button_vis_divide(self):
     self._scene.scene.clear_geometry()
@@ -1221,18 +1187,11 @@ class AppWindow:
 
   def _on_button_vis_ply(self):
     self._scene.scene.clear_geometry()
-    self.divided_pcd.generate_mesh_with_labeled_color_with_additional_points()
-    # self._scene.scene.add_geometry('labeled_mesh_additional_points', self.divided_pcd.labeled_mesh_additional_points, self.settings.obj_material)
     self.divided_pcd.generate_pcd_with_labeled_color_without_additional_points()
     pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
     pcd.translate((0, 1.2 * self.divided_pcd.model_info['size_y'], 0))
     self._scene.scene.add_geometry('labeled_pcd_without_additional_points', pcd, self.settings.obj_material)
-    selected_obj_id = self._mesh_list.selected_index + 1
-    mesh = o3d.io.read_triangle_mesh(self.dataset_info.ply_tpath.format(obj_id=selected_obj_id))
-    mesh.vertex_colors = o3d.utility.Vector3dVector(np.array(pcd.colors))
-    self.divided_pcd.labeled_mesh_without_additional_points = copy.deepcopy(mesh)
-    mesh.translate((0, -1.2 * self.divided_pcd.model_info['size_y'], 0))
-    self._scene.scene.add_geometry('labeled_mesh__without_additional_points', mesh, self.settings.obj_material)
+
   def _on_button_save_final(self):
     # # save model_mesh_additional_points
     # save_model_path = os.path.join(self.dataset_info.save_path,

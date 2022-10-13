@@ -12,7 +12,7 @@ from utils.obj import load_objs
 from utils.renderer import project
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default='tless')
-parser.add_argument('--pbr', default=False)
+parser.add_argument('--pbr', default=True)
 parser.add_argument('--test', default=False)
 args = parser.parse_args()
 
