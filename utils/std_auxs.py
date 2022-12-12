@@ -1,12 +1,12 @@
 """ surfemb dataset help function """
-from typing import Set, Sequence
+from typing import Set
 
 import cv2
 import numpy as np
 
 from .instance import BopInstanceDataset, BopInstanceAux
-from .obj import Obj
 from .renderer import ObjCoordRenderer
+from utils.allo_pose_utils import egocentric_to_allocentric
 
 class RgbLoader(BopInstanceAux):
     def __init__(self, copy=False):
@@ -30,6 +30,7 @@ class MaskLoader(BopInstanceAux):
         mask_folder = dataset.data_folder / f'{scene_id:06d}' / self.mask_type
         mask = cv2.imread(str(mask_folder / f'{img_id:06d}_{pose_idx:06d}.png'), cv2.IMREAD_GRAYSCALE)
         assert mask is not None
+        mask = mask / 255.
         inst[self.mask_type] = mask
         return inst
 
@@ -188,4 +189,26 @@ class ObjCoordAux(BopInstanceAux):
         #         obj_coord[..., 3] = mask
         #     inst[self.mask_key] = (mask * 255).astype(np.uint8)
         inst['obj_coord'] = obj_coord
+        return inst
+
+class PosePresentationAux(BopInstanceAux):
+    def __init__(self, crop_res, R_type='R_allo_6d', t_type='SITE'):
+        self.crop_res = crop_res
+        self.R_type = R_type
+        self.t_type = t_type
+
+    def __call__(self, inst: dict, dataset: BopInstanceDataset) -> dict:
+        R = inst['cam_R_obj']
+        t = inst['cam_t_obj'] / 1000.
+
+        if self.R_type == 'R_allo_6d':
+            allo_pose = egocentric_to_allocentric(np.column_stack((R, t)))
+            inst["allo_rot6d"] = allo_pose[:3, :2]
+        if self.t_type == 'SITE':
+            obj_center = np.matmul(inst['K_crop'], t)
+            obj_center = obj_center[:2] / obj_center[2]
+            crop_center = (self.crop_res - 1) / 2
+            delta_xy = (obj_center - crop_center) / self.crop_res  # [-0.5, 0.5]
+            z_ratio = (inst['AABB_crop'][2] - inst['AABB_crop'][0]) / self.crop_res * t[2]
+            inst['SITE'] = np.concatenate((delta_xy, z_ratio[np.newaxis]), axis=0)
         return inst

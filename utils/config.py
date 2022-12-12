@@ -1,4 +1,4 @@
-""" surfemb config """
+""" BOP config """
 
 import os
 from pathlib import Path
@@ -7,7 +7,7 @@ root = Path(os.path.dirname(os.path.dirname(__file__)))
 
 class DatasetConfig:
     model_folder = 'models'
-    train_folder = 'train'
+    train_folder = 'train_real'
     test_folder = 'test'
     img_folder = 'rgb'
     depth_folder = 'depth'
@@ -31,3 +31,9 @@ config['itodd'] = itodd = DatasetConfig()
 itodd.depth_ext = 'tif'
 itodd.img_folder = 'gray'
 itodd.img_ext = 'tif'
+
+config['kill'] = kill = DatasetConfig()
+kill.train_folder = 'train'
+
+config['tacsat'] = tacsat = DatasetConfig()
+tacsat.train_folder = 'train'

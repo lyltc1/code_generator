@@ -1,6 +1,8 @@
-""" This script generate labels for BOP datasets """
+""" This script generate labels for BOP datasets
 
-""" target_dir, ply_fn"""
+    both models_GT_color directory and labels directory defined in cfg
+"""
+
 import os
 import argparse
 import numpy as np
@@ -12,16 +14,14 @@ from utils.config import config, root
 from utils.obj import load_objs
 from utils.renderer import ObjCoordRenderer
 
-DEBUG = True
-
-def generate_GT_images(bop_path, data_folder, cfg):
+def generate_GT_images(bop_path, data_folder, cfg, obj_ids=None):
     print(f"start generate labels for {cfg.dataset}/{data_folder}")
     dataset_dir, _, _, _, model_ids, rgb_files, _, _, _, gts, _, cam_param_global, scene_cam = bop_io.get_dataset(
         bop_path, cfg.dataset, incl_param=True, data_folder=data_folder)
 
     target_dir = str(cfg.binary_code_folder / cfg.dataset / (data_folder + '_GT'))
     im_width, im_height = cam_param_global['im_size']
-    objs, obj_ids = load_objs(cfg, obj_ids=None)
+    objs, obj_ids = load_objs(cfg, obj_ids=obj_ids)
     renderer = ObjCoordRenderer(objs, obj_ids, im_width, im_height)
 
     for render_id in obj_ids:
@@ -87,5 +87,7 @@ if __name__ == "__main__":
     bop_path = root / 'data' / 'bop'
     cfg = config[args.dataset]
     cfg.dataset = args.dataset
-    for data_folder in [cfg.test_folder, cfg.train_folder, 'train_pbr']:
-        generate_GT_images(bop_path, data_folder, cfg)
+    obj_ids = [1]
+    # for data_folder in [cfg.test_folder, cfg.train_folder, 'train_pbr']:
+    for data_folder in [cfg.test_folder, cfg.train_folder]:
+        generate_GT_images(bop_path, data_folder, cfg, obj_ids=obj_ids)

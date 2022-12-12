@@ -1,6 +1,5 @@
 from typing import Iterable
 import json
-from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm

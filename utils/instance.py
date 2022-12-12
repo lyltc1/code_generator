@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 import torch.utils.data
 
-from .config import DatasetConfig
+from utils.config import DatasetConfig
 
 
 # BopInstanceDataset should only be used with test=True for debugging reasons
@@ -101,8 +101,8 @@ class BopInstanceAux:
 
 
 if __name__ == '__main__':
-    from .config import tless
+    from utils.config import tless
     for pbr, test in (True, False), (False, False), (False, True):
         print(f'pbr: {pbr}, test: {test}')
-        data = BopInstanceDataset(dataset_root=Path('/media/lyltc/mnt2/dataset/zebrapose/zebrapose_data/tless'), pbr=pbr, test=test, cfg=tless, obj_ids=range(1, 31))
+        data = BopInstanceDataset(dataset_root=Path('/path/to/tless'), pbr=pbr, test=test, cfg=tless, obj_ids=range(1, 31))
         print(len(data))

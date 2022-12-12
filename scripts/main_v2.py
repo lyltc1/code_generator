@@ -25,7 +25,7 @@ p = {
   # Folder containing the BOP datasets.
   'data_dir': '/home/lyltc/git/code_generator/data',
   # See dataset_params.py for options.
-  'dataset': 'tless',
+  'dataset': 'ycbv',
 }
 
 ################################################################################
@@ -52,6 +52,8 @@ def get_model_params(data_dir, dataset_name):
     'hb': list(range(1, 34)),  # Full HB dataset.
     'ycbv': list(range(1, 22)),
     'hope': list(range(1, 29)),
+    'kill': list(range(1, 2)),
+    'tacsat': list(range(1, 2))
   }[dataset_name]
 
   # Both versions of the HB dataset share the same directory.
@@ -92,6 +94,7 @@ class DividedPcd:
   def __init__(self):
     self.obj_id = None
     self.origin_pcd = None
+    self.origin_mesh = None
     self.model_info = None
     # ---- ply symmetry info ----
     self.sym_type = list()
@@ -124,6 +127,8 @@ class DividedPcd:
       pass
   def set_pcd(self, pcd):
     self.origin_pcd = pcd
+  def set_mesh(self, mesh):
+    self.origin_mesh = mesh
   def set_model_info(self, model_info):
     self.model_info = model_info
   def set_threshold(self, threshold):
@@ -194,12 +199,41 @@ class DividedPcd:
       all_dists.append(dist)
     all_dists = np.sum(np.array(all_dists), axis=0)  # (discrete_step, n_point)
     return all_dists
+
+  @staticmethod
+  def calArray2dDiff(array_0, array_1):
+    array_0_rows = array_0.view([('', array_0.dtype)] * array_0.shape[1])
+    array_1_rows = array_1.view([('', array_1.dtype)] * array_1.shape[1])
+    return np.setdiff1d(array_0_rows, array_1_rows).view(array_0.dtype).reshape(-1, array_0.shape[1])
+
+  def repair_discrete_sym_pcd(self):
+    """ in origin pcd, one point may not find it's corresponding points considering symmetry
+        the function generate the corresponding points in origin pcd and add it to self.sym_type_index['discrete sym']
+    """
+    local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['discrete sym'])
+    symmetries_discrete = self.model_info['symmetries_discrete']
+    points = np.array(local_pcd.points)
+    transformed_points = []
+    for sym in symmetries_discrete:
+      transformation_matrix = np.asarray(sym).reshape(4, 4)
+      local_pcd_transformed = copy.deepcopy(local_pcd)
+      local_pcd_transformed.transform(transformation_matrix)
+      transformed_points.append(np.array(local_pcd_transformed.points))
+    transformed_points = np.row_stack(transformed_points)
+    transformed_points = np.array(list(set([tuple(t) for t in transformed_points])))
+    new_points = DividedPcd.calArray2dDiff(transformed_points, points)
+    # add new_points to self.sym_type_index['discrete sym']
+    new_index = np.array(range(len(self.origin_pcd.points), len(self.origin_pcd.points) + len(new_points)))
+    self.sym_type_index['discrete sym'] = np.concatenate([self.sym_type_index['discrete sym'], new_index])
+    # add new_points to origin_pcd
+    self.origin_pcd.points = o3d.utility.Vector3dVector(np.row_stack([np.array(self.origin_pcd.points), new_points]))
+
   def pair_discrete_sym_pcd(self):
     """ pair points in discrete sym
-
     1. get the sym part pcd (named local_pcd)
     2. for each symmetry, build the index pair correspondence
     """
+    self.repair_discrete_sym_pcd()
     symmetries_discrete = self.model_info['symmetries_discrete']
     local_pcd = self.origin_pcd.select_by_index(self.sym_type_index['discrete sym'])
     pcd_tree = o3d.geometry.KDTreeFlann(local_pcd)
@@ -237,12 +271,45 @@ class DividedPcd:
         pair[i] = local_to_origin_index_map[pair[i]]
     self.pairs['symmetries_discrete'] = final_pairs
 
+  def repair_n_fold_sym_pcd(self, n):
+    """ in origin pcd, one point may not find it's corresponding points considering symmetry
+        the function generate the corresponding points in origin pcd and add it to self.sym_type_index['n-fold sym']
+    """
+    # ---- parse sym info ----
+    discrete_steps_count = n
+    sym = self.model_info['symmetries_continuous'][0]
+    axis = np.array(sym['axis'])
+    offset = np.array(sym['offset']).reshape((3, 1))
+    assert np.allclose(offset, np.zeros_like(offset))
+
+    local_pcd = self.origin_pcd.select_by_index(self.sym_type_index[str(n) + '_fold'])
+    points = np.array(local_pcd.points)
+    transformed_points = []
+    for step in range(1, discrete_steps_count):
+      R = transform.rotation_matrix(step * 2.0 * np.pi / discrete_steps_count, axis)[:3, :3]
+      t = -R.dot(offset) + offset
+      transformation_matrix = np.eye(4)
+      transformation_matrix[:3, :3] = R
+      transformation_matrix[:3, [3]] = t
+      local_pcd_transformed = copy.deepcopy(local_pcd)
+      local_pcd_transformed.transform(transformation_matrix)
+      transformed_points.append(np.array(local_pcd_transformed.points))
+    transformed_points = np.row_stack(transformed_points)
+    transformed_points = np.array(list(set([tuple(t) for t in transformed_points])))
+    new_points = DividedPcd.calArray2dDiff(transformed_points, points)
+    # add new_points to self.sym_type_index['discrete sym']
+    new_index = np.array(range(len(self.origin_pcd.points), len(self.origin_pcd.points) + len(new_points)))
+    self.sym_type_index[str(n) + '_fold'] = np.concatenate([self.sym_type_index[str(n) + '_fold'], new_index])
+    # add new_points to origin_pcd
+    self.origin_pcd.points = o3d.utility.Vector3dVector(np.row_stack([np.array(self.origin_pcd.points), new_points]))
+
   def pair_n_fold_sym_pcd(self, n):
     """ pair points in n_fold sym
 
     1. get the sym part pcd (named local_pcd)
     2. for each symmetry, build the index pair correspondence
     """
+    self.repair_n_fold_sym_pcd(n)
     # ---- parse sym info ----
     discrete_steps_count = n
     sym = self.model_info['symmetries_continuous'][0]
@@ -321,11 +388,13 @@ class DividedPcd:
       var_sub_pair_1 = np.sum(np.var(local_pcd_point_plane[sub_pair_1],axis=0))
       var_sub_pair_2 = np.sum(np.var(local_pcd_point_plane[sub_pair_1], axis=0))
       if var_sub_pair_1 < threshold or len(sub_pair_1) <= 1:
-        final_pairs.append(sub_pair_1)
+        if len(sub_pair_1) != 0:
+          final_pairs.append(sub_pair_1)
       else:
         pairs_to_be_divided.append(sub_pair_1)
       if var_sub_pair_2 < threshold or len(sub_pair_2) <= 1:
-        final_pairs.append(sub_pair_2)
+        if len(sub_pair_2) != 0:
+          final_pairs.append(sub_pair_2)
       else:
         pairs_to_be_divided.append(sub_pair_2)
 
@@ -519,7 +588,7 @@ class AppWindow:
     self._number_edit_threshold.set_on_value_changed(self._on_number_edit_threshold)
     self._confirm_symmetry_button = gui.Button("Divide Point by Threshold")
     self._confirm_symmetry_button.set_on_clicked(self._on_confirm_symmetry)
-    
+
     self._label_x_range = gui.Label("X range ")
     self._slider_x_min = gui.Slider(gui.Slider.DOUBLE)
     self._slider_x_min.set_on_value_changed(self._on_slider_x_min)
@@ -843,7 +912,9 @@ class AppWindow:
         result = json.loads(f.read())
     # ---- mimic the operation of choose mesh and load ----
     self._mesh_list.selected_index = obj_id - 1
-    self._on_choose_mesh()
+    mesh_path = os.path.join(self.dataset_info.save_path,
+                             'obj_{obj_id:06d}.ply'.format(obj_id=obj_id))
+    self._on_choose_mesh(mesh_path=mesh_path)
     # ---- assert information ----
     assert result['dataset_name'] == self.dataset_info.dataset_name
     assert result['num_points'] == len(self.divided_pcd.origin_pcd.points)
@@ -943,7 +1014,7 @@ class AppWindow:
       if self._scene.scene.has_geometry('clip_pcd_inverse'):
         self._scene.scene.remove_geometry('clip_pcd_inverse')
 
-  def _on_choose_mesh(self):
+  def _on_choose_mesh(self, mesh_path=False):
     '''
     1. clear scene and visualize chose point cloud file (romoved outliners)
     2. get symmetry information from bop, store in model_info
@@ -955,15 +1026,19 @@ class AppWindow:
     if selected_obj_id == 0:
       print("should choose obj in Object Choose Panel")
       return
-    mesh = o3d.io.read_triangle_mesh(self.dataset_info.ply_tpath.format(obj_id=selected_obj_id))
+    if not mesh_path:
+      mesh = o3d.io.read_triangle_mesh(self.dataset_info.ply_tpath.format(obj_id=selected_obj_id))
+    else:
+      mesh = o3d.io.read_triangle_mesh(mesh_path)
     pcd = o3d.io.read_point_cloud("None")
     pcd.points = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
 
     self._scene.scene.clear_geometry()
-    self._scene.scene.add_geometry("mesh", mesh, self.settings.obj_material)
+    self._scene.scene.add_geometry("origin_mesh", mesh, self.settings.obj_material)
     model_info = self.dataset_info.models_info[selected_obj_id]
     self.divided_pcd.obj_id = selected_obj_id
     self.divided_pcd.set_pcd(pcd)
+    self.divided_pcd.set_mesh(mesh)
     self.divided_pcd.set_model_info(model_info)
     self._label_4.text = f"x = [{model_info['min_x']}, {model_info['min_x']+model_info['size_x']}]" \
                          f"y = [{model_info['min_y']}, {model_info['min_y'] + model_info['size_y']}]" \
@@ -1028,8 +1103,8 @@ class AppWindow:
 
     sym_pcd.paint_uniform_color([0.5, 0.0, 0.0])
     disym_pcd.paint_uniform_color([0.0, 0.5, 0.0])
-    if self._scene.scene.has_geometry('origin_pcd'):
-      self._scene.scene.remove_geometry('origin_pcd')
+    if self._scene.scene.has_geometry('origin_mesh'):
+      self._scene.scene.remove_geometry('origin_mesh')
     if self._scene.scene.has_geometry('sym_pcd'):
       self._scene.scene.remove_geometry('sym_pcd')
     self._scene.scene.add_geometry('sym_pcd', sym_pcd, self.settings.obj_material)
@@ -1124,30 +1199,7 @@ class AppWindow:
     one_point_each_pair_pcd_non_shift.translate((0, -3.6 * self.divided_pcd.model_info['size_y'], 0))
     one_point_each_pair_pcd_non_shift.colors = o3d.utility.Vector3dVector(colors)
     self._scene.scene.add_geometry('one_point_each_pair_pcd_non_shift', one_point_each_pair_pcd_non_shift, self.settings.obj_material)
-    self._debug_for_vis_big_pairs_in_symmetries_discrete()
 
-  def _debug_for_vis_big_pairs_in_symmetries_discrete(self):
-    """ visualize for multi points pair in one pair """
-    tmp_pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
-    tmp_color = np.zeros([len(tmp_pcd.points), 3])
-    num_pair_more_than_100 = 0
-    for pair in self.divided_pcd.pairs['symmetries_discrete']:
-      if len(pair) > 5:
-        num_pair_more_than_100 += 1
-        coordinate = np.empty((len(pair), 3))
-        for i, index in enumerate(pair):
-          coordinate[i] = self.divided_pcd.origin_pcd.points[index]
-        if len(pair) == 8:
-          print(coordinate)
-          print(pair)
-          break
-        chosen_index = np.random.randint(len(pair))
-        tmp_color[pair] = coordinate[chosen_index]
-    tmp_color = (tmp_color-np.min(tmp_color, 0)) / (np.max(tmp_color, 0) - np.min(tmp_color, 0))
-    tmp_pcd.translate((0, -4.8 * self.divided_pcd.model_info['size_y'], 0))
-    tmp_pcd.colors = o3d.utility.Vector3dVector(tmp_color)
-    self._scene.scene.add_geometry('tmp_pcd', tmp_pcd,  self.settings.obj_material)
-    print(f"num_pair_more_than_100 = {num_pair_more_than_100}")
   def _on_button_divide_iter(self):
     """ divide point in self.divided_pcd.pairs """
     # ---- clear unrelated scene for better visualize -----
@@ -1190,7 +1242,7 @@ class AppWindow:
     self.divided_pcd.generate_pcd_with_labeled_color_without_additional_points()
     pcd = copy.deepcopy(self.divided_pcd.origin_pcd)
     pcd.translate((0, 1.2 * self.divided_pcd.model_info['size_y'], 0))
-    self._scene.scene.add_geometry('labeled_pcd_without_additional_points', pcd, self.settings.obj_material)
+    self._scene.scene.add_geometry('labeled_pcd', pcd, self.settings.obj_material)
 
   def _on_button_save_final(self):
     # # save model_mesh_additional_points
@@ -1204,7 +1256,12 @@ class AppWindow:
                                    'obj_{obj_id:06d}.ply'.format(obj_id=self.divided_pcd.obj_id))
     if not os.path.exists(self.dataset_info.save_path):
       os.makedirs(self.dataset_info.save_path)
-    o3d.io.write_triangle_mesh(save_model_path, self.divided_pcd.labeled_mesh_without_additional_points, write_ascii=True)
+    mesh = o3d.io.read_triangle_mesh("None")
+    mesh.vertices = self.divided_pcd.origin_pcd.points
+    mesh.vertex_colors = self.divided_pcd.origin_pcd.colors
+    mesh.triangles = self.divided_pcd.origin_mesh.triangles
+
+    o3d.io.write_triangle_mesh(save_model_path, mesh, write_ascii=True)
     print(f"save file: {save_model_path}")
     # save corresponding
     save_corresponding_path = os.path.join(self.dataset_info.save_path,
