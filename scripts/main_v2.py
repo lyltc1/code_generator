@@ -25,7 +25,7 @@ p = {
   # Folder containing the BOP datasets.
   'data_dir': '/home/lyltc/git/code_generator/data',
   # See dataset_params.py for options.
-  'dataset': 'ycbv',
+  'dataset': 'tless',
 }
 
 ################################################################################
@@ -462,6 +462,7 @@ class DividedPcd:
       for j in range(len(hierarchy_indices[i])):
         output_indices = self._divide_cluster(hierarchy_indices[i][j], map_coordinates, divide_number)
         hierarchy_indices[i+1].extend(output_indices)
+      print(f"finish {divide_number}-system-code iteration {i+1}/{number_of_iteration}")
     return hierarchy_indices[number_of_iteration]
   def _divide_cluster(self, input_indices, coordinates, divide_number):
     """ divide input_indices into {divide_number} output_indices """
