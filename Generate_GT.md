@@ -7,6 +7,7 @@
 
 ## Step 1: remesh models
 `cd scripts
+
  python surface_samples_remesh_visible.py --dataset ..PATH_FOR_OUTPUT/correspondence_id.txt PATH_FOR_OUTPUT/obj_000001.ply`
 
 ## Step 2: generate mesh with binary code
