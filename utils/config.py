@@ -13,8 +13,8 @@ class DatasetConfig:
     depth_folder = 'depth'
     img_ext = 'png'
     depth_ext = 'png'
-    models_GT_color_folder = root / 'data' / 'models_GT_color_v3'
-    binary_code_folder = root / 'data' / 'binary_code_v3'
+    models_GT_color_folder = root / 'data' / 'models_GT_color'
+    binary_code_folder = root / 'data' / 'binary_code'
 
 
 config = defaultdict(lambda *_: DatasetConfig())

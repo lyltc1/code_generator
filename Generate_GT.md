@@ -8,7 +8,8 @@
 ## Step 1: remesh models
 `cd scripts
 
- python surface_samples_remesh_visible.py --dataset ..PATH_FOR_OUTPUT/correspondence_id.txt PATH_FOR_OUTPUT/obj_000001.ply`
+ python surface_samples_remesh_visible.py --dataset tless
+ `
 
 ## Step 2: generate mesh with binary code
 
@@ -24,9 +25,12 @@ The expected data structure:
     ├── bop_toolkit
     ├── data/
         ├── bop/
-            ├── ycbv
-            ├── tless
-            ├── ...               #(other datasets from BOP page)
+        │   ├── ycbv
+        │   ├── tless
+        │   └── ...               #(other datasets from BOP page)
+        ├── remesh_visible
+        ├── models_GT_color
+        └── binary_code
 ```
 
 ### 
