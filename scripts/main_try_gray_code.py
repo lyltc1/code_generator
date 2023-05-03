@@ -25,7 +25,7 @@ p = {
   # Folder containing the BOP datasets.
   'data_dir': '/home/lyltc/git/code_generator/data',
   # See dataset_params.py for options.
-  'dataset': 'tless',
+  'dataset': 'lmo',
 }
 
 ################################################################################
@@ -51,10 +51,9 @@ def get_model_params(data_dir, dataset_name):
     'hbs': [1, 3, 4, 8, 9, 10, 12, 15, 17, 18, 19, 22, 23, 29, 32, 33],
     'hb': list(range(1, 34)),  # Full HB dataset.
     'ycbv': list(range(1, 22)),
-    'hope': list(range(1, 29)), 
+    'hope': list(range(1, 29)),
     'kill': list(range(1, 2)),
-    'tacsat': list(range(1, 2)),
-    'basic': list(range(1, 5))
+    'tacsat': list(range(1, 2))
   }[dataset_name]
 
   # Both versions of the HB dataset share the same directory.
@@ -224,7 +223,7 @@ class DividedPcd:
     transformed_points = np.array(list(set([tuple(t) for t in transformed_points])))
     new_points = DividedPcd.calArray2dDiff(transformed_points, points)
     # add new_points to self.sym_type_index['discrete sym']
-    new_index = np.array(range(len(self.origin_pcd.points), len(self.origin_pcd.points) + len(new_points)), dtype=np.int64)
+    new_index = np.array(range(len(self.origin_pcd.points), len(self.origin_pcd.points) + len(new_points)))
     self.sym_type_index['discrete sym'] = np.concatenate([self.sym_type_index['discrete sym'], new_index])
     # add new_points to origin_pcd
     self.origin_pcd.points = o3d.utility.Vector3dVector(np.row_stack([np.array(self.origin_pcd.points), new_points]))

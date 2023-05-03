@@ -6,7 +6,7 @@ from tqdm import tqdm
 from utils.config import config, root
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', default='ycbv')
+parser.add_argument('--dataset', default='basic')
 parser.add_argument('--face-quality-threshold', type=float, default=1e-3)
 parser.add_argument('--remesh-percentage', type=float, default=1)
 args = parser.parse_args()
