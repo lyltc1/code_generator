@@ -3,6 +3,4 @@ bop_toolkit
 data/bop/*
 data/binary_code*
 data/remesh_visible/*
-data/models_GT_color*
-data/remesh_visible/*
 **.egg-info/
