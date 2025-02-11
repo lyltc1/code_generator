@@ -17,13 +17,13 @@ import open3d.visualization.rendering as rendering
 import os
 import json
 from sklearn.cluster import KMeans
-from k_means_constrained import KMeansConstrained
+# from k_means_constrained import KMeansConstrained
 
 # PARAMETERS.
 ################################################################################
 p = {
   # Folder containing the BOP datasets.
-  'data_dir': '/home/lyltc/git/code_generator/data',
+  'data_dir': '/home/lyl/git/code_generator/data',
   # See dataset_params.py for options.
   'dataset': 'tless',
 }
@@ -76,6 +76,8 @@ def get_model_params(data_dir, dataset_name):
     'save_path': os.path.join(data_dir, 'models_GT_color_v3', dataset_name),
   }
 
+  if dataset_name == 'tless':
+    p['models_info_path'] = os.path.join(bop_dir, dataset_name, 'models_cad', 'models_info.json')
   return p
 
 
