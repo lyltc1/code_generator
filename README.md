@@ -9,7 +9,7 @@ conda create -n code python=3.9 -y
 conda activate code
 
 # Install required Python packages
-pip install open3d opencv-python pymeshlab==v2022.2 trimesh imageio
+pip install open3d opencv-python pymeshlab==v2022.2 trimesh imageio moderngl
 
 # Clone and install the BOP Toolkit
 git clone https://github.com/lyltc1/bop_toolkit.git
@@ -41,19 +41,14 @@ code_generator/
     └── binary_code           # will be generated
 ```
 
-make a softlink for bop dataset, for example
-```
-ln -s [source bop path] [target bop path]  # i.e. ln -s /mnt/2T/Data/BOP/ ./data/bop
-```
-
 
 ## Step 1: Remesh Models
-Generate dense point cloud models and save them to the data/remesh_visible/[dataset] directory.
+Generate dense point cloud models and save them to the `data/remesh_visible/[dataset]` directory.
 ``` bash
 cd scripts
 python surface_samples_remesh_visible.py --dataset tless
 ```
-## Step 2: Generate Code
+## Step 2: Generate PLY with GT_color
 change the parameter in generate_meshes.py # PARAMETERS. the path and dataset_name
 ``` bash
 cd scripts
@@ -95,3 +90,9 @@ python generate_meshes.py
             - `code_generator/data/models_GT_color_v3/tless/obj_000027.ply`
             - `code_generator/data/models_GT_color_v3/tless/Class_CorresPoint000027.json`
 ## Step 3: Generate _GT labels
+``` bash
+cd scripts
+python generate_labels.py --dataset lmo
+```
+Note: You can specify the `obj_ids` in `generate_labels.py` Line 91 to generate labels for specific objects. For example, `obj_ids = [1, 6, 9]` will only generate labels for object 1, 6, and 9. If you want to generate labels for all objects, set `obj_ids = None`. You can also specify the `data_folder` in `generate_labels.py` Line 92 to change the data folder. For example, `for data_folder in [cfg.test_folder, cfg.train_folder, 'train_pbr']:` will generate labels for the train and test folders, as well as the train_pbr folder. 
+``` bash
