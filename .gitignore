@@ -3,6 +3,7 @@ bop_toolkit
 data/bop/*
 data/binary_code*
 data/remesh_visible/*
+
 **.egg-info/
 deprecated/*.png
 output/*
