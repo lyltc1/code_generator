@@ -77,16 +77,16 @@ def generate_GT_images(bop_path, data_folder, cfg, obj_ids=None):
                 cv2.imwrite(GT_img_fn, labels[..., ::-1])
 
 
-
 if __name__ == "__main__":
     # ---- parse arg ----
     parser = argparse.ArgumentParser(description='generate image labels for dataset')
     parser.add_argument('--dataset', help='the folder name of the dataset in the bop folder', required=True)
+
     args = parser.parse_args()
     # ---- generate binary code to cfg.binary_code_folder ----
     bop_path = root / 'data' / 'bop'
     cfg = config[args.dataset]
     cfg.dataset = args.dataset
-    obj_ids = [1, 6, 9]
-    for data_folder in [cfg.test_folder, cfg.train_folder, 'train_pbr']:
+    obj_ids = [1,]
+    for data_folder in [cfg.test_folder,]:
         generate_GT_images(bop_path, data_folder, cfg, obj_ids=obj_ids)
