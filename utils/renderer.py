@@ -38,7 +38,10 @@ class ObjCoordRenderer:
         if h is None:
             h = w
         self.h, self.w = h, w
-        self.ctx = moderngl.create_context(standalone=True)
+        try:
+            self.ctx = moderngl.create_context(standalone=True, backend='egl', device_index=device_idx)
+        except Exception as e:
+            self.ctx = moderngl.create_context(standalone=True)
         self.ctx.disable(moderngl.CULL_FACE)
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.fbo = self.ctx.simple_framebuffer((w, h), components=4, dtype='f4')
